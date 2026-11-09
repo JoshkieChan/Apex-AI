@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, Field
@@ -34,6 +35,12 @@ class Settings(BaseSettings):
     max_task_attempts: int = 3
     request_timeout_seconds: float = 30.0
     worker_interval_seconds: float = 5.0
+    worker_health_port: int = Field(default=8001, ge=0, le=65535)
+    worker_shutdown_seconds: float = Field(default=20, ge=1, le=300)
+    defer_goal_execution: bool = False
+    operational_retention_days: int = Field(default=0, ge=0, le=3650)
+    auth_public_key_file: str = ""
+    auth_private_key_file: str = ""
 
     openai_api_key: str = Field(
         default="",
@@ -100,7 +107,23 @@ class Settings(BaseSettings):
 
 def load_settings() -> Settings:
     """Load settings from the environment and an optional .env file."""
-    return Settings()
+    return _apply_key_files(Settings())
+
+
+def _apply_key_files(settings: Settings) -> Settings:
+    """Fill PEM settings from operator-mounted files. The file contents are not logged."""
+    if settings.auth_public_key_file and not settings.auth_public_key_pem:
+        settings.auth_public_key_pem = _read_key_file(settings.auth_public_key_file)
+    if settings.auth_private_key_file and not settings.auth_private_key_pem:
+        settings.auth_private_key_pem = _read_key_file(settings.auth_private_key_file)
+    return settings
+
+
+def _read_key_file(path: str) -> str:
+    file = Path(path)
+    if not file.is_file():
+        raise RuntimeError("A configured key file is missing.")
+    return file.read_text(encoding="utf-8")
 
 
 def assert_runtime_is_allowed(settings: Settings) -> None:

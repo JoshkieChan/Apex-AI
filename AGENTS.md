@@ -53,7 +53,7 @@ Agents are roles in `apex.agents` for a single task, and logical agents in `apex
 - Schema changes go through Alembic. Do not call `create_all` on application startup. The current revision is `0006_reliability`.
 - Keep relational columns for identity, status, and relationships. JSON is only for validated payloads.
 - Use transactions around state transitions and execution records.
-- Do not delete audit rows to make a test pass. Physical purge of an already deleted memory removes that memory's content rows, redacts that text from context records, and leaves a tombstone without the content. It does not rewrite backups or WAL.
+- Do not delete audit rows to make a test pass. Physical purge of an already deleted memory removes that memory's content rows, redacts matching derived context text, and leaves a tombstone without the content. It does not erase task, execution, approval, or goal audit rows, and it does not rewrite backups or WAL. Those are separate retention rules. See `docs/security/data-lifecycle.md`.
 - Trusted memory and proposals stay distinct. Do not persist raw model transcripts as trusted memory.
 
 ## Task lifecycle

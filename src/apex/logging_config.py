@@ -49,6 +49,16 @@ def configure_logging(settings: Settings) -> None:
     handler.setFormatter(JsonFormatter())
     logger.addHandler(handler)
     logger.propagate = False
+    # Driver logs can include a database URL. Apex already records the exception type.
+    for name in ("sqlalchemy", "sqlalchemy.engine", "sqlalchemy.pool"):
+        driver = logging.getLogger(name)
+        driver.handlers.clear()
+        driver.propagate = False
+        driver.addFilter(_drop)
+
+
+def _drop(_record: logging.LogRecord) -> bool:
+    return False
 
 
 def get_logger(name: str) -> logging.Logger:

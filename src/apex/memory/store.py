@@ -48,11 +48,61 @@ _CANDIDATE_LIMIT = 200
 _REDACTED = "[redacted]"
 
 
+def _redact_text(haystack: str, secret: str) -> tuple[str, bool]:
+    """Redact a case- and whitespace-insensitive copy of a long secret.
+
+    Short secrets are left untouched. This does not match paraphrases, hashes,
+    or other encodings.
+    """
+    needle = " ".join(secret.casefold().split())
+    if len(needle) < 12 or not haystack:
+        return haystack, False
+    pieces: list[str] = []
+    cursor = 0
+    index = 0
+    changed = False
+    while index < len(haystack):
+        if haystack[index].isspace():
+            index += 1
+            continue
+        end = _normalized_match(haystack, index, needle)
+        if end is None:
+            index += 1
+            continue
+        pieces.append(haystack[cursor:index])
+        pieces.append(_REDACTED)
+        cursor = end
+        index = end
+        changed = True
+    if not changed:
+        return haystack, False
+    pieces.append(haystack[cursor:])
+    return "".join(pieces), True
+
+
+def _normalized_match(haystack: str, start: int, needle: str) -> int | None:
+    needle_index = 0
+    index = start
+    while needle_index < len(needle) and index < len(haystack):
+        if needle[needle_index] == " ":
+            if not haystack[index].isspace():
+                return None
+            while index < len(haystack) and haystack[index].isspace():
+                index += 1
+            needle_index += 1
+            continue
+        if haystack[index].isspace() or haystack[index].casefold() != needle[needle_index]:
+            return None
+        index += 1
+        needle_index += 1
+    if needle_index == len(needle):
+        return index
+    return None
+
+
 def _redact_value(value: Any, secret: str) -> tuple[Any, bool]:
     if isinstance(value, str):
-        if secret in value:
-            return value.replace(secret, _REDACTED), True
-        return value, False
+        return _redact_text(value, secret)
     if isinstance(value, dict):
         changed = False
         updated: dict[Any, Any] = {}
@@ -321,6 +371,25 @@ class MemoryStore:
             self._redact_context(record.content)
             self._session.delete(record)
         self._session.flush()
+        return len(rows)
+
+    def expire_operational_proposals(self, now: datetime | None = None) -> int:
+        """Delete old untrusted context proposals. Trusted audit rows stay."""
+        days = self._settings.operational_retention_days
+        if days <= 0:
+            return 0
+        moment = self._clock.now() if now is None else now
+        cutoff = moment - timedelta(days=days)
+        rows = list(
+            self._session.scalars(
+                select(ContextRecord).where(
+                    ContextRecord.trust == "proposal",
+                    ContextRecord.created_at <= cutoff,
+                )
+            )
+        )
+        for row in rows:
+            self._session.delete(row)
         return len(rows)
 
     def _redact_context(self, content: str) -> None:

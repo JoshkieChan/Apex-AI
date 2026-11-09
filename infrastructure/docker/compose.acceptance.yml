@@ -1,0 +1,147 @@
+# Disposable M5.2 acceptance stack. Project name apex-m52.
+# Volume apex_m52_disposable. Host ports 55433, 18080, and 18081.
+# Do not point this file at docker_apex_pg_data or port 5432.
+# Cleanup is: docker compose -p apex-m52 -f infrastructure/docker/compose.acceptance.yml down -v
+
+name: apex-m52
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: apex-m52-postgres
+    environment:
+      POSTGRES_USER: apex
+      POSTGRES_PASSWORD: apex
+      POSTGRES_DB: apex
+    ports:
+      - "55433:5432"
+    volumes:
+      - apex_m52_disposable:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apex -d apex"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: "no"
+
+  migrate:
+    image: apex-ai:m52
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: apex-ai:m52
+    container_name: apex-m52-api
+    environment:
+      APEX_ENVIRONMENT: test
+      APEX_DEV_AUTH_ENABLED: "true"
+      APEX_SEED_DEV_PRINCIPALS: "true"
+      APEX_DEFER_GOAL_EXECUTION: "true"
+      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+      APEX_MODEL_PROVIDER: mock
+      APEX_INSTANCE_ID: api
+      APEX_AUTH_ISSUER: https://apex.test/issuer
+      APEX_AUTH_AUDIENCE: apex-api
+      APEX_AUTH_PUBLIC_KEY_FILE: /keys/public.pem
+      APEX_AUTH_PRIVATE_KEY_FILE: /keys/private.pem
+      APEX_LOG_LEVEL: INFO
+    ports:
+      - "18080:8000"
+    volumes:
+      - apex_m52_keys:/keys:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    image: apex-ai:m52
+    container_name: apex-m52-worker
+    command: ["apex-worker"]
+    environment:
+      APEX_ENVIRONMENT: test
+      APEX_DEV_AUTH_ENABLED: "false"
+      APEX_SEED_DEV_PRINCIPALS: "false"
+      APEX_DEFER_GOAL_EXECUTION: "true"
+      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+      APEX_MODEL_PROVIDER: mock
+      APEX_INSTANCE_ID: worker
+      APEX_WORKER_HEALTH_PORT: "8001"
+      APEX_WORKER_INTERVAL_SECONDS: "1"
+      APEX_LEASE_SECONDS: "60"
+      APEX_WORKER_SHUTDOWN_SECONDS: "20"
+      APEX_LOG_LEVEL: INFO
+    ports:
+      - "18081:8001"
+    tmpfs:
+      - /hold:mode=1777
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    stop_grace_period: 25s
+
+  worker-b:
+    image: apex-ai:m52
+    container_name: apex-m52-worker-b
+    profiles: ["multi"]
+    command: ["apex-worker"]
+    environment:
+      APEX_ENVIRONMENT: test
+      APEX_DEV_AUTH_ENABLED: "false"
+      APEX_SEED_DEV_PRINCIPALS: "false"
+      APEX_DEFER_GOAL_EXECUTION: "true"
+      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+      APEX_MODEL_PROVIDER: mock
+      APEX_INSTANCE_ID: worker-b
+      APEX_WORKER_HEALTH_PORT: "8001"
+      APEX_WORKER_INTERVAL_SECONDS: "1"
+      APEX_LEASE_SECONDS: "60"
+      APEX_WORKER_SHUTDOWN_SECONDS: "20"
+      APEX_LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  apex_m52_disposable:
+    name: apex_m52_disposable
+  apex_m52_keys:
+    name: apex_m52_keys

@@ -1,4 +1,6 @@
 # Local PostgreSQL for Apex development. The password is local-only.
+# This file does not start the API or the worker. The supported stack is compose.deploy.yml.
+# Do not rename apex_pg_data. The running development project stores it as docker_apex_pg_data.
 services:
   postgres:
     image: postgres:16-alpine

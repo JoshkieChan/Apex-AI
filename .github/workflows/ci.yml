@@ -42,3 +42,16 @@ jobs:
         run: uv run alembic upgrade head
         env:
           APEX_DATABASE_URL: postgresql+psycopg://apex:apex@localhost:5432/apex
+
+  deployment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Disposable deployment
+        run: uv run python -m tests.integration.deployment_probe

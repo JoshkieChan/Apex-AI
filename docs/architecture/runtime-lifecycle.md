@@ -2,7 +2,7 @@
 
 `Orchestrator.submit` inserts a `submitted` task. If the principal and idempotency key already exist, it returns that task and does not run it again.
 
-`advance` claims a lease for `APEX_INSTANCE_ID`. The claim is a conditional update, so a second worker does not take a live lease. The lease is cleared when the call returns. A crash leaves the lease until `APEX_LEASE_SECONDS` passes. `apex-worker` then resumes tasks with an expired lease, up to `APEX_MAX_TASK_ATTEMPTS`.
+`advance` claims a lease for `APEX_INSTANCE_ID`. The claim is a conditional update, so a second worker does not take a live lease. The lease is cleared when the call returns. A crash leaves the lease until `APEX_LEASE_SECONDS` passes. `apex-worker` then resumes tasks with an expired lease, up to `APEX_MAX_TASK_ATTEMPTS`. The same process resumes `planned` and `running` goals. The supported Compose file runs it continuously. SIGTERM lets the current pass finish and release its lease. SIGKILL leaves the lease until it expires.
 
 ## States
 

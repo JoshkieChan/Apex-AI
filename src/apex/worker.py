@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import time
+import signal
+import threading
 
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -22,6 +24,7 @@ from apex.providers.base import ModelProvider
 from apex.providers.factory import build_provider
 from apex.runtime.factory import build_orchestrator
 from apex.runtime.orchestrator import ready_after_approval_ids
+from apex.worker_status import WorkerStatus, start_health_server
 
 logger = get_logger("worker")
 
@@ -128,41 +131,136 @@ def _purge_memory(
     clock: Clock,
 ) -> None:
     with factory() as session:
-        MemoryStore(session, clock, settings).purge_due()
+        store = MemoryStore(session, clock, settings)
+        store.purge_due()
+        store.expire_operational_proposals()
         session.commit()
 
 
+def probe_database(factory: sessionmaker[Session]) -> bool:
+    """Return whether the database answers. The exception text is not logged."""
+    try:
+        with factory() as session:
+            session.execute(text("SELECT 1"))
+        return True
+    except SQLAlchemyError:
+        logger.exception("worker database unavailable")
+        return False
+
+
+def eligible_goal_count(factory: sessionmaker[Session], clock: Clock, limit: int) -> int:
+    with factory() as session:
+        return len(recoverable_goal_ids(session, clock.now(), limit))
+
+
+def serve(
+    settings: Settings,
+    stop: threading.Event,
+    *,
+    clock: Clock | None = None,
+    status_out: list[WorkerStatus] | None = None,
+) -> None:
+    """Poll until asked to stop. The current pass finishes, then the process exits."""
+    used = clock or SystemClock()
+    status = WorkerStatus(settings.instance_id)
+    if status_out is not None:
+        status_out.append(status)
+    server, bound = start_health_server(settings.worker_health_port, status)
+    status.health_port = bound
+    logger.info(
+        "worker starting instance=%s interval=%s lease=%s shutdown_grace=%s health_port=%s",
+        settings.instance_id,
+        settings.worker_interval_seconds,
+        settings.lease_seconds,
+        settings.worker_shutdown_seconds,
+        bound,
+    )
+    engine = create_db_engine(settings.database_url)
+    factory = create_session_factory(engine)
+    registry = build_default_registry()
+    provider = build_provider(settings)
+    try:
+        while not stop.is_set():
+            if probe_database(factory):
+                try:
+                    claimed = recover_available(
+                        factory=factory,
+                        settings=settings,
+                        registry=registry,
+                        provider=provider,
+                        clock=used,
+                    )
+                    eligible = eligible_goal_count(factory, used, settings.max_goals_per_recovery)
+                except SQLAlchemyError:
+                    logger.exception("worker database unavailable")
+                    status.mark_degraded(when=used.now())
+                else:
+                    status.mark_operational(when=used.now(), eligible=eligible, claimed=claimed)
+                    snap = status.snapshot()
+                    logger.info(
+                        "worker poll instance=%s phase=operational eligible=%s claimed=%s "
+                        "successes=%s failures=%s",
+                        settings.instance_id,
+                        snap["eligible_goals"],
+                        snap["claimed_goals"],
+                        snap["recovery_successes"],
+                        snap["recovery_failures"],
+                    )
+            else:
+                status.mark_degraded(when=used.now())
+                logger.info(
+                    "worker poll instance=%s phase=degraded eligible=0 claimed=0",
+                    settings.instance_id,
+                )
+            if stop.wait(settings.worker_interval_seconds):
+                break
+    finally:
+        status.mark_shutting_down()
+        logger.info("worker stopped instance=%s", settings.instance_id)
+        engine.dispose()
+        server.shutdown()
+        server.server_close()
+
+
 def recover_once() -> int:
-    """Recover tasks using process settings. Intended for the worker command."""
+    """Recover tasks using process settings. Intended for one-shot invocation."""
     settings = load_settings()
     assert_runtime_is_allowed(settings)
     configure_logging(settings)
     engine = create_db_engine(settings.database_url)
-    return recover_available(
-        factory=create_session_factory(engine),
-        settings=settings,
-        registry=build_default_registry(),
-        provider=build_provider(settings),
-        clock=SystemClock(),
-    )
+    try:
+        return recover_available(
+            factory=create_session_factory(engine),
+            settings=settings,
+            registry=build_default_registry(),
+            provider=build_provider(settings),
+            clock=SystemClock(),
+        )
+    finally:
+        engine.dispose()
 
 
 def main() -> None:
-    """Poll until interrupted. `--once` performs a single recovery pass."""
+    """Poll until SIGTERM or SIGINT. `--once` performs a single recovery pass."""
     parser = argparse.ArgumentParser(description="Resume interrupted Apex tasks.")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
     settings = load_settings()
-    try:
-        while True:
-            count = recover_once()
-            logger.info("recovery pass resumed %s task(s)", count)
-            if args.once:
-                return
-            time.sleep(settings.worker_interval_seconds)
-    except KeyboardInterrupt:
-        logger.info("worker stopped")
+    assert_runtime_is_allowed(settings)
+    configure_logging(settings)
+    if args.once:
+        count = recover_once()
+        logger.info("recovery pass resumed %s task(s)", count)
         return
+    stop = threading.Event()
+
+    def _stop(_signum: int, _frame: object) -> None:
+        logger.info("worker shutdown requested instance=%s", settings.instance_id)
+        stop.set()
+
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
+    serve(settings, stop)
 
 
 if __name__ == "__main__":

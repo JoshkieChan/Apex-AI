@@ -123,7 +123,10 @@ class CoordinationService:
         self._session.flush()
         self._store_graph(goal, task, nodes, reason="initial", trigger="submit")
         self._event(goal, "goal_submitted", actor, {"revision": 1})
-        return self.advance(goal.id, actor, max_waves=self._waves(max_waves))
+        waves = max_waves
+        if waves is None and self._settings.defer_goal_execution:
+            waves = 0
+        return self.advance(goal.id, actor, max_waves=self._waves(waves))
 
     def advance(
         self,
@@ -182,6 +185,7 @@ class CoordinationService:
                 for subtask in ready[: self._settings.max_goal_concurrency]:
                     progressed = self._run_one(goal, task, actor, subtask) or progressed
                     self._session.commit()
+                    self._hold_for_env("APEX_TEST_HOLD_AFTER_SUBTASK")
                 waves += 1
                 if not progressed:
                     self._finish(goal, task)
@@ -199,8 +203,9 @@ class CoordinationService:
         if not marker or self._settings.environment != "test":
             return
         path = Path(marker)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("held", encoding="utf-8")
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + 60
         while path.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
 
@@ -1083,9 +1088,13 @@ class CoordinationService:
         )
 
     def _waves(self, requested: int | None) -> int | None:
-        if requested is None or self._settings.environment != "test":
+        if requested is None:
             return None
-        return requested
+        if self._settings.environment == "test":
+            return requested
+        if self._settings.defer_goal_execution and requested == 0:
+            return 0
+        return None
 
     def _aggregate(self, rows: list[GoalSubtask]) -> dict[str, Any]:
         def keys(status: str) -> list[str]:

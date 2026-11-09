@@ -38,7 +38,7 @@ uv run alembic upgrade head
 uv run apex-api
 ```
 
-On PowerShell, `copy` works for the example env file. The API listens on `http://127.0.0.1:8000`.
+On PowerShell, `copy` works for the example env file. The API listens on `http://127.0.0.1:8000`. This Compose file starts PostgreSQL only. It does not start the API or the worker, and it uses host port 5432 and the volume `apex_pg_data`.
 
 Development principals seeded when `APEX_SEED_DEV_PRINCIPALS=true`:
 
@@ -62,11 +62,21 @@ curl -s -X POST http://127.0.0.1:8000/v1/dev/tokens ^
 
 Use the returned `access_token` as `Authorization: Bearer ...`. `X-Apex-Principal` is not an identity.
 
-Resume tasks whose lease expired:
+The local API process finishes an eligible goal inside the request when `APEX_DEFER_GOAL_EXECUTION` is false. A one-shot resume of expired leases is:
 
 ```bash
 uv run apex-worker --once
 ```
+
+## Supported deployment
+
+`infrastructure/docker/compose.deploy.yml` is the supported stack. It starts PostgreSQL, applies migrations once, then starts the API and a continuous `apex-worker`. The worker is not part of the API process. Eligible `planned` and `running` goals resume without `POST /v1/goals/{id}/run`.
+
+```bash
+docker compose -f infrastructure/docker/compose.deploy.yml up -d --build
+```
+
+That project uses host port 5433 and the volume `apex_deploy_pg_data`. It does not attach the development volume. The image process runs as `nobody`, with development authentication off. `GET /health` can be 200 while `GET /ready` is 503 until the issuer, audience, and public key are configured. Worker health is `http://127.0.0.1:8001/health` and is 200 only after a database poll succeeds. See `docs/architecture/deployment.md`.
 
 ## Tests and checks
 

@@ -27,11 +27,11 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - One-shot migration command `python -m apex.persistence.migrate`. API processes do not migrate on startup.
 - Production `/ready` requires the Alembic revision `0006_reliability`, an active authenticator, and a usable secret provider when an external provider is required.
 - Task events, executions, verifications, and one trusted task-scoped context record after a passed verification.
-- Governed memory with personal, project, task, and system scope. Versions, provenance, reliability, logical deletion, physical purge of expired deletions, deterministic retrieval, and a context budget. Model proposals stay inferred candidates. Memory does not grant authority. Purge tombstones do not store content, and backups are not rewritten.
+- Governed memory with personal, project, task, and system scope. Versions, provenance, reliability, logical deletion, physical purge of expired deletions, deterministic retrieval, and a context budget. Model proposals stay inferred candidates. Memory does not grant authority. Purge tombstones do not store content. Derived context redaction, operational audit retention, and backup retention are separate and are documented in `docs/security/data-lifecycle.md`.
 - Development token issuance rejects proxy headers even from a loopback peer, including `Via`, `X-Original-URL`, `CF-Connecting-IP`, and `X-Forwarded-Server`.
 - Remote MCP connections use the pinned transport and an httpx client with `max_redirects` 0. That controls requests made with the client Apex passes to the SDK. It is not an operating-system guarantee about other sockets.
 - Secret providers are `env`, `file`, and `vault` KV v2. Production that requires an external provider refuses `env` and does not fall back to it. The Vault client is tested with a mock transport.
-- Coordinated goals for a fixed set of objectives. Logical agents are Coordinator, Planner, Researcher, Executor, and Verifier. A role is not a grant. Capability work uses `ExecutionEngine`. The worker claims a PostgreSQL lease on the goal and resumes `planned` and `running` goals without `POST /v1/goals/{id}/run`. Completed executions are not repeated. Uncertain work is not retried. A goal is `completed` only when the current plan revision has a passed verification. There is no A2A protocol.
+- Coordinated goals for a fixed set of objectives. Logical agents are Coordinator, Planner, Researcher, Executor, and Verifier. A role is not a grant. Capability work uses `ExecutionEngine`. The worker claims a PostgreSQL lease on the goal and resumes `planned` and `running` goals without `POST /v1/goals/{id}/run`. Completed executions are not repeated. Uncertain work is not retried. A goal is `completed` only when the current plan revision has a passed verification. There is no A2A protocol. The supported deployment runs that worker beside the API. `APEX_DEFER_GOAL_EXECUTION` leaves a new goal for the worker instead of finishing it inside the request.
 - OpenID Connect discovery for one configured HTTPS issuer, or a pinned JWKS URL. The token cannot choose the issuer or the JWKS URL.
 
 ## Partial
@@ -43,7 +43,7 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - OIDC discovery and JWKS fetches are implemented. Tests inject the documents. A live identity provider was not called.
 - The Vault KV v2 client is implemented and tested with a mock HTTP transport. A production Vault server is not provisioned here.
 - Reconciliation of fixture updates reads the in-process store. A remote server without that independent read stays inconclusive and returns a manual reconciliation path.
-- A Dockerfile is included. It installs the package, copies Alembic, and starts Uvicorn as `nobody`. It does not run migrations and it is not, by itself, a production deployment.
+- The supported deployment does not make the service production-ready. Live Vault, live OIDC, and erasure of backups or WAL are not included.
 
 ## Deferred
 
@@ -55,6 +55,23 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - Distributed workers, Kubernetes, and external side effects beyond the in-memory fixture
 - Billing, admin dashboards, and autonomous self-improvement
 - Rewriting or expiring immutable database backups
+
+## Verification recorded for M5.2
+
+Commands ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for the pytest run was Compose service `docker-postgres-1` on `localhost:5432`.
+
+- `ruff format --check .` — 160 files already formatted
+- `ruff check .` — all checks passed
+- `mypy` — no issues in 98 source files
+- `pytest` with `APEX_POSTGRES_TEST_URL=postgresql+psycopg://apex:apex@host.docker.internal:5432/apex` — 138 passed, 0 skipped
+
+`python -m tests.integration.deployment_probe` printed `deployment-ok`. It used Compose project `apex-m52`, a new volume named `apex_m52_disposable`, and image `apex-ai:m52`. The probe upgraded that empty database, downgraded to base, and upgraded again to `0006_reliability`. It then completed a deferred goal with a passed verification without calling `/run`, restarted the API without replacing the worker, kept an export goal at `awaiting_approval` with no execution, left cancelled, completed, and uncertain goals in place, failed an exhausted goal, killed the worker after the first committed execution, and showed a second worker could not advance that lease. After the lease expired, recovery finished the goal without a second execution of the committed step. Stopping the API and worker and starting them again completed an unfinished goal. Stopping PostgreSQL made worker `/health` return 503; starting it returned 200 with the same execution count. A purged memory stayed absent after that restart, and the task request text remained.
+
+The same image, without development overrides, returned `/health` 200 with `auth_mode` `unconfigured` and `environment` `production`, `/ready` 503, `POST /v1/tasks` 401, and `POST /v1/dev/tokens` 404. Starting it with development authentication enabled failed. A worker from that image, with production settings and the disposable database, became healthy. `docker stop` of the acceptance worker exited 0 and logged the shutdown. Container logs did not contain the private key.
+
+`docker volume ls` after `down -v` showed only `docker_apex_pg_data`. `docker-postgres-1` was running and its `alembic_version` was `0006_reliability`. No Alembic revision was added.
+
+Live Vault and live OIDC were not called.
 
 ## Verification recorded 2026-11-09
 

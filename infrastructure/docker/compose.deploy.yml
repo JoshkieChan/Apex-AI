@@ -1,0 +1,114 @@
+# Supported Apex deployment. This file does not attach the development database.
+# The development database is infrastructure/docker/compose.yaml on host port 5432,
+# volume docker_apex_pg_data. This stack uses host port 5433 and apex_deploy_pg_data.
+#
+# The image command is the API. The worker service replaces that command.
+# Migrations run once in the migrate service. Neither process migrates on startup.
+
+name: apex-deploy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: apex
+      POSTGRES_PASSWORD: apex
+      POSTGRES_DB: apex
+    ports:
+      - "5433:5432"
+    volumes:
+      - apex_deploy_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apex -d apex"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  migrate:
+    image: apex-ai:deploy
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: apex-ai:deploy
+    environment:
+      APEX_ENVIRONMENT: production
+      APEX_DEV_AUTH_ENABLED: "false"
+      APEX_SEED_DEV_PRINCIPALS: "false"
+      APEX_DEFER_GOAL_EXECUTION: "true"
+      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+      APEX_MODEL_PROVIDER: mock
+      APEX_INSTANCE_ID: api
+      APEX_SECRET_PROVIDER: env
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    stop_grace_period: 20s
+
+  worker:
+    image: apex-ai:deploy
+    command: ["apex-worker"]
+    environment:
+      APEX_ENVIRONMENT: production
+      APEX_DEV_AUTH_ENABLED: "false"
+      APEX_SEED_DEV_PRINCIPALS: "false"
+      APEX_DEFER_GOAL_EXECUTION: "true"
+      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+      APEX_MODEL_PROVIDER: mock
+      APEX_INSTANCE_ID: worker
+      APEX_WORKER_HEALTH_PORT: "8001"
+      APEX_WORKER_INTERVAL_SECONDS: "5"
+      APEX_LEASE_SECONDS: "60"
+      APEX_WORKER_SHUTDOWN_SECONDS: "20"
+      APEX_SECRET_PROVIDER: env
+    ports:
+      - "8001:8001"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 25s
+    restart: unless-stopped
+    stop_grace_period: 25s
+
+volumes:
+  apex_deploy_pg_data:
+    name: apex_deploy_pg_data

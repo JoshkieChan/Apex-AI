@@ -45,8 +45,8 @@ Validation errors add `details` with `loc`, `msg`, and `type` only.
 | POST | `/v1/memory/{id}/dispute` | `memory.update` | marks the current version disputed |
 | POST | `/v1/memory/{id}/supersede` | `memory.update` | closes the old version and creates a replacement |
 | DELETE | `/v1/memory/{id}` | `memory.delete` | logical delete |
-| POST | `/v1/memory/purge` | `memory.manage` | physically delete memories past the retention window. The response is a count |
-| POST | `/v1/goals` | authenticated | submit a coordinated objective. Unknown text is 400 `not_a_goal` |
+| POST | `/v1/memory/purge` | `memory.manage` | physically delete governed memories past the retention window. The response count is memories removed. It does not delete task, execution, approval, or goal rows |
+| POST | `/v1/goals` | authenticated | submit a coordinated objective. Unknown text is 400 `not_a_goal`. When `APEX_DEFER_GOAL_EXECUTION` is true and `max_waves` is omitted, the response stays at zero waves for the worker |
 | GET | `/v1/goals/{id}` | owner | goal, subtasks, invocation identity, verification status, and event names |
 | POST | `/v1/goals/{id}/run` | owner | continue ready subtasks. The same claim is used by the worker |
 | POST | `/v1/goals/{id}/replan` | owner | revise after an agent failure that had no execution. Pending approvals on that task are cancelled |

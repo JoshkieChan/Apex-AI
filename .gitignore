@@ -33,5 +33,7 @@ Thumbs.db
 # Secrets and keys
 *.pem
 *.key
+.deploy-hold/
+.deploy-keys/
 credentials.json
 secrets.json
