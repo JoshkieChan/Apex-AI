@@ -16,9 +16,7 @@ down_revision: str | None = "0005_coordination"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_VERIFY = (
-    "status IN ('passed', 'failed', 'inconclusive', 'partially_verified', 'not_applicable')"
-)
+_VERIFY = "status IN ('passed', 'failed', 'inconclusive', 'partially_verified', 'not_applicable')"
 
 
 def upgrade() -> None:
