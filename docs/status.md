@@ -58,16 +58,20 @@ This file describes the code in the repository. It is not a roadmap disguised as
 
 ## Verification recorded for the M5.2 closure pass
 
-These checks ran locally against the uncommitted closure. No commit SHA exists for this pass, and GitHub Actions has not run it. The previous remediation commit and its Actions run are recorded in the next section. `origin/main` is still `d832cf111199a61a588b0b09b94478a323da3dec`. `origin/master` is still `0a0b5d9b7350fa4856854448ea1659835e04ade1`. A normal pull request from `master` into `main` is not open. M5.1 and M5.2 are not accepted. The supported deployment remains one worker.
+The closure commit is `a82fbbd99a73fe14ac5a5bebac1045645f98a3b6` on branch `master`. It keeps `0a0b5d9b7350fa4856854448ea1659835e04ade1` in its history. GitHub Actions run `42692150292` completed with success for that commit. Both the quality job and the deployment job succeeded. That run is https://github.com/JoshkieChan/Apex-AI/actions/runs/42692150292.
 
-Commands ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for pytest was the existing Compose service on the host. No Alembic revision was added. Schema remains `0006_reliability`.
+The quality log reports `ruff check` passed, `ruff format --check` found 166 files already formatted, mypy found no issues in 98 source files, and pytest reported 158 passed. The deployment log printed `deployment-ok`. GitHub Actions has the Docker CLI, so the rendered Compose test ran there. A local run inside `python:3.12-slim` had skipped that one test because that image has no Docker CLI.
+
+Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 is open from `master` into `main` and has not been merged. `origin/main` remains `d832cf111199a61a588b0b09b94478a323da3dec`. M5.1 and M5.2 are not accepted. The supported deployment remains one worker. Horizontal scaling is unsupported. Remote side effects are not exactly-once. An ambiguous non-idempotent remote write stays uncertain for manual reconciliation. Python does not cancel an in-flight adapter thread; process exit abandons it, and Docker SIGKILL after 25 seconds is the container backstop. Live Vault and live OIDC were not called.
+
+Local commands before that commit ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for pytest was the existing Compose service on the host. No Alembic revision was added. Schema remains `0006_reliability`.
 
 - `ruff check .` — all checks passed
 - `ruff format --check .` — 166 files already formatted
 - `mypy` — no issues in 98 source files
 - `pytest` with `APEX_POSTGRES_TEST_URL` set — 157 passed, 1 skipped, 0 failed
 
-The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that container image has no Docker CLI. The same test passed on the host in the previous remediation run.
+The skipped local test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that container image has no Docker CLI. The same test passed on the host in the previous remediation run and passed in Actions run `42692150292`.
 
 `python -m tests.integration.deployment_probe` printed `deployment-ok` and exited 0. It used Compose project `apex-m52` and volume `apex_m52_disposable`. It included schema downgrade and upgrade, worker restart without a second execution of a committed step, database outage, the production image, and `docker stop -t 25` of the acceptance worker. That stop exited 0 and logged the shutdown. After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0006_reliability`.
 
@@ -92,7 +96,7 @@ The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_
 
 After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0006_reliability`.
 
-`origin/main` remained `d832cf111199a61a588b0b09b94478a323da3dec` after that push. `master` is one commit ahead of `main`. M5.1 and M5.2 are not accepted. The supported deployment is still one worker. Live Vault and live OIDC were not called.
+At that push, `origin/main` remained `d832cf111199a61a588b0b09b94478a323da3dec` and `master` was one commit ahead. The current branch state is in the closure section above. M5.1 and M5.2 are not accepted. The supported deployment is still one worker. Live Vault and live OIDC were not called.
 
 ## Verification recorded for M5.2
 
