@@ -33,6 +33,7 @@ class WorkerStatus:
     goals_deferred: int = 0
     recovery_successes: int = 0
     recovery_failures: int = 0
+    poll_failures: int = 0
     shutting_down: bool = False
     health_port: int = 0
     _last_success_mono: float | None = field(default=None, repr=False)
@@ -85,7 +86,7 @@ class WorkerStatus:
             self.last_poll_at = when.isoformat()
             self.eligible_goals = 0
             self.claimed_goals = 0
-            self.recovery_failures += 1
+            self.poll_failures += 1
 
     def mark_shutting_down(self) -> None:
         with self._lock:
@@ -121,6 +122,7 @@ class WorkerStatus:
                 "goals_deferred": self.goals_deferred,
                 "recovery_successes": self.recovery_successes,
                 "recovery_failures": self.recovery_failures,
+                "poll_failures": self.poll_failures,
                 "poll_fresh": fresh,
                 "shutting_down": self.shutting_down,
             }

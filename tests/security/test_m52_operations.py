@@ -21,10 +21,11 @@ from tests.security.test_coordination import EXPORT, SEQUENTIAL
 from apex.api.app import create_app
 from apex.clock import SystemClock
 from apex.config import Settings, _apply_key_files, assert_runtime_is_allowed
+from apex.coordination.service import CoordinationService
 from apex.logging_config import JsonFormatter
 from apex.memory.store import MemoryStore, _redact_text
 from apex.persistence.base import Base
-from apex.persistence.models import ContextRecord, Execution
+from apex.persistence.models import ContextRecord, Execution, Goal
 from apex.persistence.session import create_db_engine, create_session_factory
 from apex.runtime_ids import new_id
 from apex.worker import RecoveryReport, probe_database, recover_available, serve
@@ -235,10 +236,111 @@ def test_claimed_work_is_not_counted_as_a_successful_recovery() -> None:
     assert body["tasks_handled"] == 2
     assert body["recovery_successes"] == 1
     assert body["recovery_failures"] == 2
+    assert body["poll_failures"] == 0
     assert body["goals_uncertain"] == 1
     assert body["goals_deferred"] == 1
     assert "password" not in json.dumps(body)
     assert "postgresql" not in json.dumps(body)
+
+
+def test_a_lease_conflict_is_not_a_claim(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = client.post(
+        "/v1/goals", headers=auth(), params={"max_waves": 0}, json={"objective": SEQUENTIAL}
+    )
+    assert started.status_code == 200, started.text
+    goal_id = started.json()["id"]
+    with client.app.state.session_factory() as session:
+        goal = session.get(Goal, goal_id)
+        assert goal is not None
+        goal.lease_owner = "other-worker"
+        goal.lease_expires_at = datetime.now(UTC) + timedelta(hours=1)
+        session.commit()
+    monkeypatch.setattr(
+        "apex.worker.recoverable_goal_ids",
+        lambda _session, _now, _limit: [goal_id],
+    )
+    report = recover_available(
+        factory=client.app.state.session_factory,
+        settings=client.app.state.settings,
+        registry=client.app.state.registry,
+        provider=client.app.state.provider,
+        clock=client.app.state.clock,
+    )
+    assert report.goals_claimed == 0
+    assert report.goals_deferred == 0
+    assert report.goals_succeeded == 0
+    assert report.goals_failed == 0
+
+
+def test_a_claimed_failure_is_not_a_lease_conflict(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = client.post(
+        "/v1/goals", headers=auth(), params={"max_waves": 0}, json={"objective": SEQUENTIAL}
+    )
+    assert started.status_code == 200, started.text
+
+    def _fail(self: CoordinationService, goal_id: str, actor: object, **kwargs: object) -> dict:
+        del goal_id, actor, kwargs
+        self.last_claim_acquired = True
+        raise RuntimeError("recovery broke after the claim")
+
+    monkeypatch.setattr(CoordinationService, "advance", _fail)
+    report = recover_available(
+        factory=client.app.state.session_factory,
+        settings=client.app.state.settings,
+        registry=client.app.state.registry,
+        provider=client.app.state.provider,
+        clock=client.app.state.clock,
+    )
+    assert report.goals_claimed == 1
+    assert report.goals_failed == 1
+    assert report.goals_succeeded == 0
+    status = WorkerStatus("metrics")
+    status.mark_operational(
+        when=datetime.now(UTC),
+        eligible=1,
+        goals_claimed=report.goals_claimed,
+        goals_failed=report.goals_failed,
+    )
+    assert status.snapshot()["recovery_failures"] == 1
+    assert status.snapshot()["recovery_successes"] == 0
+    assert status.snapshot()["poll_failures"] == 0
+
+
+def test_an_uncertain_recovery_is_not_a_success(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = client.post(
+        "/v1/goals", headers=auth(), params={"max_waves": 0}, json={"objective": SEQUENTIAL}
+    )
+    assert started.status_code == 200, started.text
+
+    def _uncertain(
+        self: CoordinationService, goal_id: str, actor: object, **kwargs: object
+    ) -> dict:
+        del actor, kwargs
+        self.last_claim_acquired = True
+        goal = self._session.get(Goal, goal_id)
+        assert goal is not None
+        goal.status = "uncertain"
+        self._session.commit()
+        return {}
+
+    monkeypatch.setattr(CoordinationService, "advance", _uncertain)
+    report = recover_available(
+        factory=client.app.state.session_factory,
+        settings=client.app.state.settings,
+        registry=client.app.state.registry,
+        provider=client.app.state.provider,
+        clock=client.app.state.clock,
+    )
+    assert report.goals_claimed == 1
+    assert report.goals_uncertain == 1
+    assert report.goals_succeeded == 0
+    assert report.goals_failed == 0
 
 
 def test_a_stale_poll_is_unhealthy_until_the_next_success() -> None:
@@ -343,7 +445,7 @@ def test_a_goal_recovery_exception_is_a_failure(monkeypatch: pytest.MonkeyPatch)
             )
             assert report.goals_failed == 1
             assert report.goals_succeeded == 0
-            assert report.goals_claimed == 1
+            assert report.goals_claimed == 0
     finally:
         engine.dispose()
 

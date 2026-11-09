@@ -16,7 +16,7 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - Approval binding to a canonical SHA-256 operation hash, including capability version, schema hash, and delegation resource scope.
 - Separation of duties, approval expiry, replay rejection, and schema-change rejection.
 - Lease compare-and-swap so a live lease is not taken by another worker. Horizontal scaling is unsupported: a worker that continues after lease expiry is not fenced. The supported deployment runs one worker.
-- Uncertain outcome for a non-idempotent call whose result is lost after a possible write. The persisted execution, not the exception code, decides the goal. A `timed_out` exception does not mark that goal failed. The worker does not retry it, and replan does not repeat it.
+- Uncertain outcome for a non-idempotent call whose result is lost after a possible write. The persisted execution, not the exception code, decides the goal. A local `timed_out` exception, and a remote failure after the tool request was sent, do not mark that goal failed. A connection failure before the request is sent stays a definitive failure. The worker does not retry an uncertain write, and replan does not repeat it.
 - Authorized reconciliation of that outcome from fixture state (`possibly_sent`, `confirmed_success`, `confirmed_failure`, `inconclusive`, `not_sent`).
 - In-process MCP fixture (`records_lookup`, `records_update`) discovered through the MCP SDK and executed only after explicit registration.
 - Remote Streamable HTTP MCP registration with endpoint checks, secret references, and execution through the same engine. A schema change marks the tool unavailable until it is registered again.
@@ -56,14 +56,35 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - Billing, admin dashboards, and autonomous self-improvement
 - Rewriting or expiring immutable database backups
 
+## Verification recorded for the M5.2 closure pass
+
+These checks ran locally against the uncommitted closure. No commit SHA exists for this pass, and GitHub Actions has not run it. The previous remediation commit and its Actions run are recorded in the next section. `origin/main` is still `d832cf111199a61a588b0b09b94478a323da3dec`. `origin/master` is still `0a0b5d9b7350fa4856854448ea1659835e04ade1`. A normal pull request from `master` into `main` is not open. M5.1 and M5.2 are not accepted. The supported deployment remains one worker.
+
+Commands ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for pytest was the existing Compose service on the host. No Alembic revision was added. Schema remains `0006_reliability`.
+
+- `ruff check .` — all checks passed
+- `ruff format --check .` — 166 files already formatted
+- `mypy` — no issues in 98 source files
+- `pytest` with `APEX_POSTGRES_TEST_URL` set — 157 passed, 1 skipped, 0 failed
+
+The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that container image has no Docker CLI. The same test passed on the host in the previous remediation run.
+
+`python -m tests.integration.deployment_probe` printed `deployment-ok` and exited 0. It used Compose project `apex-m52` and volume `apex_m52_disposable`. It included schema downgrade and upgrade, worker restart without a second execution of a committed step, database outage, the production image, and `docker stop -t 25` of the acceptance worker. That stop exited 0 and logged the shutdown. After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0006_reliability`.
+
+A remote non-idempotent `records_update` whose response is dropped after the request is sent stays `uncertain` with `possibly_sent`. A connection failure before that request stays `not_sent`. An idempotent `records_lookup` timeout stays a definitive failure. The process shutdown test sent SIGTERM to a real worker process while an adapter thread was blocked. The process exited 0. The replacement worker did not create a second execution. Python does not cancel that adapter thread. The process exit abandons it. Docker SIGKILL after the 25 second stop grace period remains the container backstop.
+
+Live Vault and live OIDC were not called.
+
 ## Verification recorded for the M5.2 remediation
 
-Commands ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for pytest was Compose service `docker-postgres-1` on `localhost:5432`. No Alembic revision was added. Schema remains `0006_reliability`.
+The remediation commit is `0a0b5d9b7350fa4856854448ea1659835e04ade1` on branch `master`. GitHub Actions run `42683559257` completed with success for that commit. Both the quality job and the deployment job succeeded. That run is https://github.com/JoshkieChan/Apex-AI/actions/runs/42683559257.
+
+Local commands before that commit ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for pytest was Compose service `docker-postgres-1` on `localhost:5432`. No Alembic revision was added. Schema remains `0006_reliability`.
 
 - `ruff check .` — all checks passed
 - `ruff format --check .` — 164 files already formatted
 - `mypy` — no issues in 98 source files
-- `pytest` with `APEX_POSTGRES_TEST_URL=postgresql+psycopg://apex:apex@host.docker.internal:5432/apex` — 150 passed, 1 skipped, 0 failed
+- `pytest` with `APEX_POSTGRES_TEST_URL` set to the local PostgreSQL service — 150 passed, 1 skipped, 0 failed
 
 The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that container image has no Docker CLI. The same test, run on the host with `python -m pytest --noconftest tests/security/test_deployment_compose.py`, passed. Missing `APEX_POSTGRES_PASSWORD` makes `docker compose config` fail. With a dummy password the rendered API port is `host_ip: 127.0.0.1` and `published: "8000"`. PostgreSQL and worker health are not published. `APEX_DEV_AUTH_ENABLED` is false and `APEX_ENVIRONMENT` is production.
 
@@ -71,9 +92,7 @@ The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_
 
 After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0006_reliability`.
 
-GitHub Actions was not run. These changes are uncommitted on `d832cf1`, and no push was authorized. The earlier successful run on `d832cf1` does not cover this remediation.
-
-Live Vault and live OIDC were not called.
+`origin/main` remained `d832cf111199a61a588b0b09b94478a323da3dec` after that push. `master` is one commit ahead of `main`. M5.1 and M5.2 are not accepted. The supported deployment is still one worker. Live Vault and live OIDC were not called.
 
 ## Verification recorded for M5.2
 

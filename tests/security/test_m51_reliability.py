@@ -368,6 +368,8 @@ def test_database_outage_does_not_crash_the_worker(
     assert body["status"] == "degraded"
     assert body["database"] == "unavailable"
     assert body["recovery_successes"] == 0
+    assert body["poll_failures"] >= 1
+    assert body["recovery_failures"] == 0
     stop.set()
     thread.join(5)
     assert not thread.is_alive()

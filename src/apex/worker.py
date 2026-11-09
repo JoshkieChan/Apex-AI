@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import threading
 from collections.abc import Callable
@@ -164,25 +165,27 @@ def _recover_goals(
     claimed = succeeded = failed = uncertain = deferred = 0
     for goal_id in goal_ids:
         with factory() as session:
+            service = CoordinationService(session, settings, registry, clock)
             try:
-                outcome = CoordinationService(session, settings, registry, clock).recover(goal_id)
+                result = service.recover(goal_id)
                 session.commit()
             except Exception:  # noqa: BLE001
                 session.rollback()
                 logger.exception("goal recovery failed for %s", goal_id)
-                claimed += 1
+                if service.last_claim_acquired:
+                    claimed += 1
                 failed += 1
                 continue
-            if outcome == "skipped":
+            if not result.claimed:
                 continue
             claimed += 1
-            if outcome == "succeeded":
+            if result.outcome == "succeeded":
                 succeeded += 1
-            elif outcome == "failed":
+            elif result.outcome == "failed":
                 failed += 1
-            elif outcome == "uncertain":
+            elif result.outcome == "uncertain":
                 uncertain += 1
-            else:
+            elif result.outcome == "deferred":
                 deferred += 1
     return RecoveryReport(
         goals_claimed=claimed,
@@ -405,6 +408,10 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     serve(settings, stop)
+    # serve() returns when the shutdown wait ends. A blocked adapter thread is
+    # not cancelled by ThreadPoolExecutor; ending the process is the deadline.
+    # Docker's stop grace period is the SIGKILL backstop if this does not run.
+    os._exit(0)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,14 @@ from apex.secrets import resolve_configured_secret
 
 _SLOTS = threading.BoundedSemaphore(4)
 MCP_MAX_REDIRECTS = 0
+_TOOL_CALL = b"tools/call"
+
+
+class _ToolDispatch:
+    """Whether the tools/call request was handed to the network."""
+
+    def __init__(self) -> None:
+        self.sent = False
 
 
 def list_remote_tools(server: McpServerRecord, settings: Settings) -> list[dict[str, Any]]:
@@ -72,19 +80,50 @@ def _run(
 ) -> Any:
     if not _SLOTS.acquire(blocking=False):
         raise DomainError("capability_unavailable", "The MCP connection limit has been reached.")
+    dispatch = _ToolDispatch()
     try:
-        return asyncio.run(_session(endpoint, credential_ref, settings, operation, resolver))
+        return asyncio.run(
+            _session(endpoint, credential_ref, settings, operation, resolver, dispatch)
+        )
     except DomainError:
         raise
     except Exception as exc:
-        if isinstance(exc, httpx2.TimeoutException):
-            raise DomainError("endpoint_timeout", "The endpoint did not respond in time.") from exc
-        raise DomainError(
-            "capability_unavailable",
-            "The MCP server did not complete the call.",
-        ) from exc
+        raise _transport_error(exc, sent=dispatch.sent) from exc
     finally:
         _SLOTS.release()
+
+
+def _transport_error(exc: Exception, *, sent: bool) -> DomainError:
+    """Classify a transport failure by whether the tool request was sent.
+
+    Connection and pool failures before tools/call are definitive. A read,
+    write, or protocol failure after that request was handed to the network
+    is ambiguous: the server may already have applied it. httpx retries are
+    disabled on the pinned transport, and this function does not call again.
+    """
+    pre_dispatch = isinstance(exc, (httpx2.ConnectTimeout, httpx2.ConnectError, httpx2.PoolTimeout))
+    if sent and not pre_dispatch:
+        code = (
+            "endpoint_timeout"
+            if isinstance(exc, httpx2.TimeoutException)
+            else "capability_unavailable"
+        )
+        return DomainError(
+            code,
+            "The remote tool request was sent and the outcome was not confirmed.",
+            dispatched=True,
+        )
+    if isinstance(exc, httpx2.TimeoutException):
+        return DomainError(
+            "endpoint_timeout",
+            "The endpoint did not respond in time.",
+            dispatched=False,
+        )
+    return DomainError(
+        "capability_unavailable",
+        "The MCP server did not complete the call.",
+        dispatched=False,
+    )
 
 
 async def _session(
@@ -93,6 +132,7 @@ async def _session(
     settings: Settings,
     operation: Any,
     resolver: Resolver | None,
+    dispatch: _ToolDispatch,
 ) -> Any:
     url = validate_remote_url(
         endpoint,
@@ -118,6 +158,7 @@ async def _session(
         max_bytes=settings.mcp_max_bytes,
         resolver=resolver,
         verify=_verify(settings),
+        dispatch=dispatch,
     )
     async with httpx2.AsyncClient(
         transport=transport,
@@ -172,6 +213,13 @@ def _structured(result: Any) -> dict[str, Any]:
     raise DomainError("invalid_output", "The MCP tool did not return a structured object.")
 
 
+def _request_body(request: httpx2.Request) -> bytes:
+    try:
+        return bytes(request.content)
+    except Exception:
+        return b""
+
+
 def _verify(settings: Settings) -> ssl.SSLContext | bool:
     if settings.environment == "production":
         return True
@@ -194,6 +242,7 @@ class _PinnedTransport(httpx2.AsyncBaseTransport):
         max_bytes: int,
         resolver: Resolver | None,
         verify: ssl.SSLContext | bool,
+        dispatch: _ToolDispatch | None = None,
         inner: httpx2.AsyncBaseTransport | None = None,
     ) -> None:
         self._host = host
@@ -202,6 +251,7 @@ class _PinnedTransport(httpx2.AsyncBaseTransport):
         self._allow_loopback = allow_loopback
         self._max_bytes = max_bytes
         self._resolver = resolver
+        self._dispatch = dispatch or _ToolDispatch()
         self._inner = inner or httpx2.AsyncHTTPTransport(verify=verify, retries=0)
 
     async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
@@ -214,14 +264,25 @@ class _PinnedTransport(httpx2.AsyncBaseTransport):
             raise DomainError(
                 "endpoint_rejected", "The endpoint address changed during the request."
             )
+        body = _request_body(request)
+        tool_call = request.method == "POST" and _TOOL_CALL in body
         pinned = httpx2.Request(
             request.method,
             request.url.copy_with(host=current[0]),
             headers=request.headers,
-            stream=request.stream,
+            content=body,
             extensions={**request.extensions, "sni_hostname": self._host},
         )
-        response = await self._inner.handle_async_request(pinned)
+        try:
+            response = await self._inner.handle_async_request(pinned)
+        except (httpx2.ConnectTimeout, httpx2.ConnectError, httpx2.PoolTimeout):
+            raise
+        except Exception:
+            if tool_call:
+                self._dispatch.sent = True
+            raise
+        if tool_call:
+            self._dispatch.sent = True
         await response.aread()
         if len(response.content) > self._max_bytes:
             raise DomainError("endpoint_rejected", "The endpoint response is too large.")

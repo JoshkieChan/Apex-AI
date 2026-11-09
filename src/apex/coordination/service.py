@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +71,19 @@ _GOAL_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 
+@dataclass(frozen=True)
+class GoalRecovery:
+    """What one recovery pass did with one goal.
+
+    claimed is true only after this process acquired the lease. A discovered
+    goal whose lease belongs to someone else is not_claimed and claimed is false.
+    deferred means the lease was acquired and the goal is waiting, not finished.
+    """
+
+    outcome: str
+    claimed: bool
+
+
 class CoordinationService:
     """Own a goal graph and schedule the smallest ready set."""
 
@@ -84,6 +98,7 @@ class CoordinationService:
         self._settings = settings
         self._registry = registry
         self._clock = clock
+        self.last_claim_acquired = False
 
     def submit(
         self,
@@ -152,6 +167,7 @@ class CoordinationService:
             self._settings.lease_seconds,
             self._settings.max_goal_recoveries,
         )
+        self.last_claim_acquired = claimed
         if not claimed:
             return self.view(goal_id, actor)
         # The claim is durable before any subtask runs. A crash after this commit
@@ -213,23 +229,27 @@ class CoordinationService:
         while path.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
 
-    def recover(self, goal_id: str) -> str:
+    def recover(self, goal_id: str) -> GoalRecovery:
         """Resume one goal. The result names the outcome, not merely that a row changed."""
         goal = self._session.get(Goal, goal_id)
         if goal is None or goal.status not in {"planned", "running"}:
-            return "skipped"
+            return GoalRecovery("skipped", False)
         actor = self._session.get(Principal, goal.principal_id)
         if actor is None:
-            return "failed"
+            return GoalRecovery("failed", False)
+        self.last_claim_acquired = False
         self.advance(goal_id, actor)
         self._session.refresh(goal)
+        claimed = self.last_claim_acquired
         if goal.status == "completed":
-            return "succeeded"
+            return GoalRecovery("succeeded", claimed)
         if goal.status == "uncertain":
-            return "uncertain"
+            return GoalRecovery("uncertain", claimed)
         if goal.status == "failed":
-            return "failed"
-        return "deferred"
+            return GoalRecovery("failed", claimed)
+        if not claimed:
+            return GoalRecovery("not_claimed", False)
+        return GoalRecovery("deferred", True)
 
     def exhaust(self, goal_id: str) -> None:
         """Stop a goal that has used its recovery budget. It does not start work."""

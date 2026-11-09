@@ -8,6 +8,7 @@ from sqlalchemy import case, or_, select, update
 from sqlalchemy.orm import Session
 
 from apex.capabilities.registry import CapabilityRegistry
+from apex.execution.engine import latest_execution_for_step
 from apex.persistence.models import AgentInvocation, Execution, Goal, GoalSubtask
 from apex.runtime.transitions import affected_rows
 
@@ -89,7 +90,7 @@ def repair_stale_subtasks(
     for subtask in rows:
         if subtask.status != "running":
             continue
-        execution = session.get(Execution, subtask.execution_id) if subtask.execution_id else None
+        execution = _execution_for_repair(session, subtask, now)
         if execution is not None and execution.status == "succeeded":
             subtask.status = "completed"
             subtask.output_payload = dict(execution.output_payload or {})
@@ -121,6 +122,47 @@ def repair_stale_subtasks(
             subtask.error_code = execution.error_code or "execution_failed"
             _close_running(session, subtask.id, "failed", now)
         subtask.updated_at = now
+
+
+def _execution_for_repair(
+    session: Session,
+    subtask: GoalSubtask,
+    now: datetime,
+) -> Execution | None:
+    """Find the execution for a running subtask, including one not yet linked.
+
+    A crash after the engine commits possibly_sent and before coordination stores
+    the execution id must not look like a step that never started. Lease expiry
+    alone cannot authorize another non-idempotent dispatch.
+    """
+    execution = session.get(Execution, subtask.execution_id) if subtask.execution_id else None
+    if execution is None and subtask.plan_step_id:
+        found = latest_execution_for_step(session, subtask.plan_step_id)
+        if found is not None and (
+            found.status == "uncertain" or found.outcome_certainty == "possibly_sent"
+        ):
+            if found.status == "running":
+                found.status = "uncertain"
+                found.certainty = "uncertain"
+                found.error_code = found.error_code or "outcome_uncertain"
+                found.error_message = (
+                    found.error_message
+                    or "The worker stopped after the operation may have been sent."
+                )
+                found.finished_at = now
+            subtask.execution_id = found.id
+            return found
+        not_sent = (
+            found is not None
+            and found.status == "running"
+            and found.outcome_certainty == "not_sent"
+        )
+        if not_sent and found is not None:
+            found.status = "failed"
+            found.error_code = "not_sent"
+            found.error_message = "The worker stopped before the operation was sent."
+            found.finished_at = now
+    return execution
 
 
 def _close_running(session: Session, subtask_id: str, status: str, now: datetime) -> None:
