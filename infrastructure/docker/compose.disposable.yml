@@ -1,0 +1,21 @@
+# Disposable PostgreSQL for a fresh-volume acceptance check.
+# This file does not use the development volume apex_pg_data or host port 5432.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: apex
+      POSTGRES_PASSWORD: apex
+      POSTGRES_DB: apex
+    ports:
+      - "55432:5432"
+    volumes:
+      - apex_m51_disposable:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apex -d apex"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+volumes:
+  apex_m51_disposable:
+    name: apex_m51_disposable

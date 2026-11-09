@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: apex
+          POSTGRES_PASSWORD: apex
+          POSTGRES_DB: apex
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U apex -d apex"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      APEX_POSTGRES_TEST_URL: postgresql+psycopg://apex:apex@localhost:5432/apex
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format
+        run: uv run ruff format --check .
+      - name: Type check
+        run: uv run mypy
+      - name: Test
+        run: uv run pytest
+      - name: Migrate PostgreSQL
+        run: uv run alembic upgrade head
+        env:
+          APEX_DATABASE_URL: postgresql+psycopg://apex:apex@localhost:5432/apex
