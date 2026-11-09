@@ -62,7 +62,7 @@ The closure commit is `a82fbbd99a73fe14ac5a5bebac1045645f98a3b6` on branch `mast
 
 The quality log reports `ruff check` passed, `ruff format --check` found 166 files already formatted, mypy found no issues in 98 source files, and pytest reported 158 passed. The deployment log printed `deployment-ok`. GitHub Actions has the Docker CLI, so the rendered Compose test ran there. A local run inside `python:3.12-slim` had skipped that one test because that image has no Docker CLI.
 
-Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 is open from `master` into `main` and has not been merged. `origin/main` remains `d832cf111199a61a588b0b09b94478a323da3dec`. M5.1 and M5.2 are not accepted. The supported deployment remains one worker. Horizontal scaling is unsupported. Remote side effects are not exactly-once. An ambiguous non-idempotent remote write stays uncertain for manual reconciliation. Python does not cancel an in-flight adapter thread; process exit abandons it, and Docker SIGKILL after 25 seconds is the container backstop. Live Vault and live OIDC were not called.
+Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 is open from `master` into `main` and has not been merged. `origin/main` remains `d832cf111199a61a588b0b09b94478a323da3dec`. That verification did not include the later dispatch-certainty correction. The supported deployment remains one worker. Horizontal scaling is unsupported. Remote side effects are not exactly-once. An ambiguous non-idempotent remote write stays uncertain for manual reconciliation. Python does not cancel an in-flight adapter thread; process exit abandons it, and Docker SIGKILL after 25 seconds is the container backstop. Live Vault and live OIDC were not called.
 
 Local commands before that commit ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for pytest was the existing Compose service on the host. No Alembic revision was added. Schema remains `0006_reliability`.
 
@@ -78,6 +78,23 @@ The skipped local test is `test_rendered_deploy_compose_requires_a_password_and_
 A remote non-idempotent `records_update` whose response is dropped after the request is sent stays `uncertain` with `possibly_sent`. A connection failure before that request stays `not_sent`. An idempotent `records_lookup` timeout stays a definitive failure. The process shutdown test sent SIGTERM to a real worker process while an adapter thread was blocked. The process exited 0. The replacement worker did not create a second execution. Python does not cancel that adapter thread. The process exit abandons it. Docker SIGKILL after the 25 second stop grace period remains the container backstop.
 
 Live Vault and live OIDC were not called.
+
+## Final M5 closure
+
+M5, M5.1, and M5.2 are implemented. Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 stays open from `master` into `main` and has not been merged. `origin/main` remains `d832cf111199a61a588b0b09b94478a323da3dec` until that merge. The supported deployment is one worker. Horizontal scaling is unsupported. A non-idempotent remote write whose response is lost, rejected, or reported as a tool error after dispatch stays `uncertain` with `possibly_sent`. Apex does not replay it. It does not claim exactly-once delivery to an arbitrary remote system, and it has no independent readback for a server that is not the in-process fixture. A connection failure before the request stays `not_sent`. An idempotent lookup timeout or response rejection stays a definitive failure. Python does not cancel an in-flight adapter thread; process exit abandons it, and Docker SIGKILL after 25 seconds is the container backstop. Live Vault and live OIDC were not called. M6 is not started. A2A, embeddings, and rewriting backups or WAL stay deferred.
+
+The dispatch correction preserves the original `DomainError` after `tools/call`, including a nested `ExceptionGroup`. The integration fixture applies `records_update` before the response is dropped, oversized, returned as HTML, returned with unusable structured content, or returned with `isError`. `/run`, replan, worker recovery, reopening the goal, and reading the goal do not send a second write.
+
+Local verification of this correction ran in `python:3.12-slim` with `APEX_POSTGRES_TEST_URL` set to the existing Compose PostgreSQL service. No Alembic revision was added. Schema remains `0006_reliability`.
+
+- `ruff check .` — all checks passed
+- `ruff format --check .` — 166 files already formatted
+- `mypy` — no issues in 98 source files
+- `pytest` — 162 passed, 1 skipped, 0 failed
+
+The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that image has no Docker CLI. The same file, run in a container with Docker Compose v2.32.4 and the host Docker daemon, passed both tests. `python -m tests.integration.deployment_probe` printed `deployment-ok` and exited 0. It used Compose project `apex-m52` and volume `apex_m52_disposable`. After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0006_reliability`.
+
+The commit SHA and GitHub Actions run for this closure are recorded after the push.
 
 ## Verification recorded for the M5.2 remediation
 
@@ -96,7 +113,7 @@ The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_
 
 After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0006_reliability`.
 
-At that push, `origin/main` remained `d832cf111199a61a588b0b09b94478a323da3dec` and `master` was one commit ahead. The current branch state is in the closure section above. M5.1 and M5.2 are not accepted. The supported deployment is still one worker. Live Vault and live OIDC were not called.
+At that push, `origin/main` remained `d832cf111199a61a588b0b09b94478a323da3dec` and `master` was one commit ahead. The current branch state is in the final closure section above. The supported deployment is still one worker. Live Vault and live OIDC were not called.
 
 ## Verification recorded for M5.2
 
@@ -168,7 +185,7 @@ Commands were run in `python:3.12-slim` with a local copy of this tree, because 
 - `docker build -t apex-ai:dev -f infrastructure/docker/Dockerfile .` succeeded. The image sets `APEX_ENVIRONMENT=production`, `APEX_DEV_AUTH_ENABLED=false`, and `APEX_SEED_DEV_PRINCIPALS=false`. It does not apply migrations.
 - The running image returned `GET /health` 200 with `database: ok`, `environment: production`, and `auth_mode: unconfigured`. `GET /ready` returned 503 `not_ready`. `POST /v1/tasks` with only `X-Apex-Principal` returned 401 `development_auth_rejected`.
 
-GitHub Actions has not been run. Live OpenAI and Anthropic calls were not made.
+GitHub Actions was not run for that 2026-11-08 verification. Later sections record the Actions runs for the M5 closure. Live OpenAI and Anthropic calls were not made.
 
 ## Not production-ready
 

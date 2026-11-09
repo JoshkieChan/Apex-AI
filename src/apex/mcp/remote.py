@@ -34,6 +34,7 @@ class _ToolDispatch:
 
     def __init__(self) -> None:
         self.sent = False
+        self.failure: DomainError | None = None
 
 
 def list_remote_tools(server: McpServerRecord, settings: Settings) -> list[dict[str, Any]]:
@@ -85,12 +86,48 @@ def _run(
         return asyncio.run(
             _session(endpoint, credential_ref, settings, operation, resolver, dispatch)
         )
-    except DomainError:
+    except DomainError as exc:
+        # The SDK reads the HTTP response on another task. A DomainError raised
+        # there is not the exception that surfaces here, so the transport stores
+        # it. Tool-result checks raise on this task and only need the flag.
+        # An unset flag would report a possible write as a confirmed failure.
+        chosen = _with_dispatch(exc, dispatch)
+        if chosen is not exc:
+            raise chosen from exc
         raise
     except Exception as exc:
+        # The MCP client runs the call in task groups. A DomainError raised
+        # after tools/call, including a tool error result, arrives nested
+        # inside ExceptionGroup. Unwrap it so its code and dispatch flag survive.
+        found = dispatch.failure
+        if found is None and dispatch.sent:
+            found = _nested_domain_error(exc)
+        if found is not None:
+            raise _with_dispatch(found, dispatch) from exc
         raise _transport_error(exc, sent=dispatch.sent) from exc
     finally:
         _SLOTS.release()
+
+
+def _nested_domain_error(exc: BaseException) -> DomainError | None:
+    if isinstance(exc, DomainError):
+        return exc
+    for child in getattr(exc, "exceptions", ()):
+        found = _nested_domain_error(child)
+        if found is not None:
+            return found
+    cause = exc.__cause__
+    if cause is not None:
+        return _nested_domain_error(cause)
+    return None
+
+
+def _with_dispatch(exc: DomainError, dispatch: _ToolDispatch) -> DomainError:
+    """Keep the original code and attach the tools/call handoff when it happened."""
+    chosen = dispatch.failure or exc
+    if dispatch.sent and chosen.dispatched is not True:
+        chosen.dispatched = True
+    return chosen
 
 
 def _transport_error(exc: Exception, *, sent: bool) -> DomainError:
@@ -285,11 +322,21 @@ class _PinnedTransport(httpx2.AsyncBaseTransport):
             self._dispatch.sent = True
         await response.aread()
         if len(response.content) > self._max_bytes:
-            raise DomainError("endpoint_rejected", "The endpoint response is too large.")
+            raise self._response_rejected(tool_call, "The endpoint response is too large.")
         media = response.headers.get("content-type", "")
         if media.startswith("text/html") or media.startswith("image/"):
-            raise DomainError("endpoint_rejected", "The endpoint returned an unexpected response.")
+            raise self._response_rejected(
+                tool_call, "The endpoint returned an unexpected response."
+            )
         return response
+
+    def _response_rejected(self, tool_call: bool, message: str) -> DomainError:
+        """A response check failed. A tools/call may already have been applied."""
+        exc = DomainError("endpoint_rejected", message, dispatched=True if tool_call else None)
+        if tool_call:
+            self._dispatch.sent = True
+            self._dispatch.failure = exc
+        return exc
 
     async def aclose(self) -> None:
         await self._inner.aclose()

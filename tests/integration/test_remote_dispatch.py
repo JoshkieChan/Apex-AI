@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
 import threading
@@ -32,7 +33,13 @@ from apex.api.app import create_app
 from apex.authority.engine import AuthorityEngine
 from apex.config import Settings
 from apex.contracts.schemas import Decision, PlanStepDraft, RiskLevel
-from apex.mcp.fixture import discover_fixture_tools, server
+from apex.mcp.fixture import (
+    discover_fixture_tools,
+    operation_landed,
+    read_record,
+    reset_fixture,
+    server,
+)
 from apex.mcp.registration import McpRegistrationService
 from apex.persistence.base import Base
 from apex.persistence.models import Execution, Goal, GoalSubtask, PlanStep
@@ -47,11 +54,51 @@ def test_dispatched_remote_update_stays_uncertain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = {"update": 0}
-    url, ca = _serve(tmp_path / "update", _drop_after(calls, b"records_update"))
+    url, ca = _serve(tmp_path / "update", _fault_after_apply(calls, b"records_update", "drop"))
     monkeypatch.setenv("APEX_MCP_CA_FILE", str(ca))
     _with_database(
         tmp_path,
-        lambda client: _assert_dispatched_update(client, url, calls, monkeypatch),
+        lambda client: _assert_dispatched_update(
+            client,
+            url,
+            calls,
+            monkeypatch,
+            {"endpoint_timeout", "capability_unavailable"},
+        ),
+    )
+
+
+@pytest.mark.parametrize("mode", ["oversize", "html", "unstructured"])
+def test_post_dispatch_validation_stays_uncertain(
+    mode: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"update": 0}
+    url, ca = _serve(tmp_path / mode, _fault_after_apply(calls, b"records_update", mode))
+    monkeypatch.setenv("APEX_MCP_CA_FILE", str(ca))
+    codes = {
+        "oversize": {"endpoint_rejected"},
+        "html": {"endpoint_rejected"},
+        "unstructured": {"invalid_output", "capability_unavailable", "execution_failed"},
+    }[mode]
+    _with_database(
+        tmp_path,
+        lambda client: _assert_dispatched_update(client, url, calls, monkeypatch, codes),
+    )
+
+
+def test_server_reported_tool_error_after_write_stays_uncertain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"update": 0}
+    url, ca = _serve(
+        tmp_path / "tool-error", _fault_after_apply(calls, b"records_update", "tool_error")
+    )
+    monkeypatch.setenv("APEX_MCP_CA_FILE", str(ca))
+    _with_database(
+        tmp_path,
+        lambda client: _assert_dispatched_update(
+            client, url, calls, monkeypatch, {"capability_failed"}
+        ),
     )
 
 
@@ -71,11 +118,35 @@ def test_idempotent_remote_lookup_timeout_is_not_uncertain(
     _with_database(tmp_path, lambda client: _assert_lookup_timeout(client, url, calls))
 
 
+def test_idempotent_remote_response_rejection_is_not_uncertain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"lookup": 0}
+    url, ca = _serve(tmp_path / "lookup-html", _fault_after_apply(calls, b"records_lookup", "html"))
+    monkeypatch.setenv("APEX_MCP_CA_FILE", str(ca))
+    _with_database(tmp_path, lambda client: _assert_lookup_rejected(client, url, calls))
+
+
 def _assert_dispatched_update(
     client: TestClient,
     endpoint: str,
     calls: dict[str, int],
     monkeypatch: pytest.MonkeyPatch,
+    codes: set[str],
+) -> None:
+    reset_fixture()
+    try:
+        _assert_applied_update(client, endpoint, calls, monkeypatch, codes)
+    finally:
+        reset_fixture()
+
+
+def _assert_applied_update(
+    client: TestClient,
+    endpoint: str,
+    calls: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+    codes: set[str],
 ) -> None:
     capability = _register(client, endpoint, "records_update", "high", "records.update")
     goal = _goal(client)
@@ -95,11 +166,15 @@ def _assert_dispatched_update(
     assert subtask["status"] == "uncertain"
     assert subtask["execution_id"]
     assert calls["update"] == 1
+    assert read_record("alpha") == {"name": "alpha", "status": "closed"}
+    assert operation_landed("op-remote-1") == {"name": "alpha", "status": "closed"}
     execution = _execution(client, subtask["execution_id"])
     assert execution.status == "uncertain"
     assert execution.outcome_certainty == "possibly_sent"
-    assert execution.error_code in {"endpoint_timeout", "capability_unavailable"}
+    assert execution.error_code in codes
     assert (execution.evidence or {}).get("transport_phase") == "dispatched"
+    inspected = client.get(f"/v1/goals/{goal['id']}", headers=auth())
+    assert inspected.status_code == 200, inspected.text
     again = client.post(f"/v1/goals/{goal['id']}/run", headers=auth())
     assert again.status_code == 200, again.text
     revised = client.post(f"/v1/goals/{goal['id']}/replan", headers=auth())
@@ -118,6 +193,8 @@ def _assert_dispatched_update(
     assert forced.status_code == 200, forced.text
     assert forced.json()["status"] == "uncertain"
     assert calls["update"] == 1
+    assert read_record("alpha") == {"name": "alpha", "status": "closed"}
+    assert operation_landed("op-remote-1") == {"name": "alpha", "status": "closed"}
     assert _execution_count(client, subtask["execution_id"]) == 1
 
 
@@ -160,6 +237,23 @@ def _assert_lookup_timeout(client: TestClient, endpoint: str, calls: dict[str, i
     assert execution.status == "failed"
     assert execution.outcome_certainty == "confirmed_failure"
     assert execution.error_code in {"endpoint_timeout", "capability_unavailable"}
+    assert calls["lookup"] == 1
+
+
+def _assert_lookup_rejected(client: TestClient, endpoint: str, calls: dict[str, int]) -> None:
+    capability = _register(client, endpoint, "records_lookup", "low", "records.lookup")
+    goal = _goal(client)
+    _retarget(client, str(goal["id"]), capability, {"name": "alpha"})
+    ran = client.post(f"/v1/goals/{goal['id']}/run", headers=auth())
+    assert ran.status_code == 200, ran.text
+    body = ran.json()
+    assert body["status"] != "uncertain"
+    subtask = next(row for row in body["subtasks"] if row["key"] == "s0")
+    assert subtask["status"] == "failed", body
+    execution = _execution(client, subtask["execution_id"])
+    assert execution.status == "failed"
+    assert execution.outcome_certainty == "confirmed_failure"
+    assert execution.error_code == "endpoint_rejected"
     assert calls["lookup"] == 1
 
 
@@ -377,6 +471,111 @@ def _settings(url: str) -> Settings:
         mcp_allow_local_fixture=True,
         instance_id="remote-test",
     )
+
+
+def _fault_after_apply(
+    calls: dict[str, int], marker: bytes, mode: str
+) -> Callable[[object, dict, Callable], object]:
+    """Run the real tool, then drop or replace the response. The write stays applied."""
+
+    async def middleware(scope: dict, receive: Callable, send: Callable) -> None:
+        if scope.get("type") != "http":
+            await app(scope, receive, send)
+            return
+        messages: list[dict] = []
+        body = b""
+        while True:
+            message = await receive()
+            messages.append(message)
+            if message["type"] != "http.request":
+                break
+            body += message.get("body") or b""
+            if not message.get("more_body", False):
+                break
+        if scope.get("method") != "POST" or b"tools/call" not in body or marker not in body:
+            await app(scope, _replay(messages), send)
+            return
+        captured: list[dict] = []
+
+        async def capture(message: dict) -> None:
+            captured.append(message)
+
+        await app(scope, _replay(messages), capture)
+        key = "update" if marker == b"records_update" else "lookup"
+        calls[key] += 1
+        if mode == "drop":
+            await asyncio.Event().wait()
+            return
+        payload = _response_body(captured)
+        content_type = b"application/json"
+        if mode == "oversize":
+            payload = b'{"padding":"' + (b"x" * 1_000_001) + b'"}'
+        elif mode == "html":
+            payload = b"<html>rejected</html>"
+            content_type = b"text/html"
+        elif mode == "unstructured":
+            payload = _rewrite_result(payload, structured=False, tool_error=False)
+        elif mode == "tool_error":
+            payload = _rewrite_result(payload, structured=True, tool_error=True)
+        else:
+            raise AssertionError(mode)
+        await _send_replaced(send, captured, payload, content_type)
+
+    app = server().streamable_http_app(
+        streamable_http_path="/mcp",
+        json_response=True,
+        stateless_http=True,
+        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    )
+    return middleware
+
+
+def _replay(messages: list[dict]) -> Callable[[], dict]:
+    index = 0
+
+    async def replay() -> dict:
+        nonlocal index
+        if index < len(messages):
+            message = messages[index]
+            index += 1
+            return message
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    return replay
+
+
+def _response_body(messages: list[dict]) -> bytes:
+    return b"".join(
+        message.get("body") or b""
+        for message in messages
+        if message.get("type") == "http.response.body"
+    )
+
+
+def _rewrite_result(payload: bytes, *, structured: bool, tool_error: bool) -> bytes:
+    parsed = json.loads(payload)
+    result = parsed["result"]
+    if tool_error:
+        result["isError"] = True
+    if not structured:
+        result["structuredContent"] = "not-an-object"
+        result["isError"] = False
+    return json.dumps(parsed).encode("utf-8")
+
+
+async def _send_replaced(
+    send: Callable, captured: list[dict], payload: bytes, content_type: bytes
+) -> None:
+    start = next(message for message in captured if message.get("type") == "http.response.start")
+    headers: list[list[bytes]] = []
+    for name, value in start.get("headers", []):
+        if name.lower() in {b"content-type", b"content-length"}:
+            continue
+        headers.append([name, value])
+    headers.append([b"content-type", content_type])
+    headers.append([b"content-length", str(len(payload)).encode("ascii")])
+    await send({**start, "headers": headers})
+    await send({"type": "http.response.body", "body": payload, "more_body": False})
 
 
 def _drop_after(calls: dict[str, int], marker: bytes) -> Callable[[object, dict, Callable], object]:
