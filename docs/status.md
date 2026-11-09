@@ -94,7 +94,7 @@ Local verification of this correction ran in `python:3.12-slim` with `APEX_POSTG
 
 The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that image has no Docker CLI. The same file, run in a container with Docker Compose v2.32.4 and the host Docker daemon, passed both tests. `python -m tests.integration.deployment_probe` printed `deployment-ok` and exited 0. It used Compose project `apex-m52` and volume `apex_m52_disposable`. After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0006_reliability`.
 
-The commit SHA and GitHub Actions run for this closure are recorded after the push.
+The closure commit is `1eda94877f95e51596460e8702e827f7cf979383` on `master`. GitHub Actions run `42724225582` (push) and run `42724231569` (pull request) both completed with success for that commit. Quality and deployment succeeded in each run. Those runs are https://github.com/JoshkieChan/Apex-AI/actions/runs/42724225582 and https://github.com/JoshkieChan/Apex-AI/actions/runs/42724231569.
 
 ## Verification recorded for the M5.2 remediation
 
