@@ -294,13 +294,30 @@ class ExecutionEngine:
         self._session.commit()
 
     def _finish_failure(self, record: Execution, exc: DomainError, *, idempotent: bool) -> None:
-        if exc.code == "timed_out" and not idempotent:
+        if _ambiguous_dispatch(exc, idempotent=idempotent):
             record.status = ExecutionStatus.uncertain.value
             record.certainty = "uncertain"
             record.outcome_certainty = "possibly_sent"
             record.error_code = exc.code
             record.error_message = exc.message
             record.finished_at = self._clock.now()
+            evidence = dict(record.evidence or {})
+            evidence["raised_code"] = exc.code
+            evidence["outcome_certainty"] = "possibly_sent"
+            evidence["transport_phase"] = "dispatched"
+            record.evidence = evidence
+            self._session.commit()
+            return
+        if exc.dispatched is False:
+            record.status = ExecutionStatus.failed.value
+            record.outcome_certainty = "not_sent"
+            record.error_code = exc.code
+            record.error_message = exc.message
+            record.finished_at = self._clock.now()
+            evidence = dict(record.evidence or {})
+            evidence["raised_code"] = exc.code
+            evidence["transport_phase"] = "pre_dispatch"
+            record.evidence = evidence
             self._session.commit()
             return
         status = (
@@ -316,6 +333,42 @@ class ExecutionEngine:
         record.error_message = exc.message
         record.finished_at = self._clock.now()
         self._session.commit()
+
+
+def _ambiguous_dispatch(exc: DomainError, *, idempotent: bool) -> bool:
+    """A non-idempotent call is uncertain only when it may already have been sent.
+
+    A local adapter timeout has no transport phase, so it stays ambiguous.
+    A remote failure that records dispatched=False happened before the tool
+    request left the client and is a normal failure.
+    """
+    if idempotent or exc.dispatched is False:
+        return False
+    if exc.dispatched is True:
+        return True
+    return exc.code == "timed_out"
+
+
+def unresolved_external_outcome(execution: Execution | None) -> bool:
+    """True when the persisted row says an external side effect may have happened.
+
+    A timeout code by itself is not enough. An idempotent timeout stays
+    `inconclusive`, and a failure before the operation is sent has no row or
+    stays `not_sent`.
+    """
+    if execution is None:
+        return False
+    if execution.status == ExecutionStatus.uncertain.value:
+        return True
+    return execution.outcome_certainty == "possibly_sent"
+
+
+def latest_execution_for_step(session: Session, plan_step_id: str) -> Execution | None:
+    """Return the newest persisted attempt for a plan step, if one exists."""
+    rows = executions_for_step(session, plan_step_id)
+    if not rows:
+        return None
+    return rows[-1]
 
 
 def _object(value: Any) -> dict[str, Any]:

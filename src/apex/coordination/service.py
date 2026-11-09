@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,11 @@ from apex.coordination.graph import (
 from apex.coordination.leases import claim_goal, release_goal, repair_stale_subtasks
 from apex.coordination.registry import agent_rows
 from apex.errors import DomainError
-from apex.execution.engine import ExecutionEngine
+from apex.execution.engine import (
+    ExecutionEngine,
+    latest_execution_for_step,
+    unresolved_external_outcome,
+)
 from apex.memory.store import MemoryStore
 from apex.persistence.models import (
     AgentInvocation,
@@ -66,6 +71,19 @@ _GOAL_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 
+@dataclass(frozen=True)
+class GoalRecovery:
+    """What one recovery pass did with one goal.
+
+    claimed is true only after this process acquired the lease. A discovered
+    goal whose lease belongs to someone else is not_claimed and claimed is false.
+    deferred means the lease was acquired and the goal is waiting, not finished.
+    """
+
+    outcome: str
+    claimed: bool
+
+
 class CoordinationService:
     """Own a goal graph and schedule the smallest ready set."""
 
@@ -80,6 +98,7 @@ class CoordinationService:
         self._settings = settings
         self._registry = registry
         self._clock = clock
+        self.last_claim_acquired = False
 
     def submit(
         self,
@@ -148,6 +167,7 @@ class CoordinationService:
             self._settings.lease_seconds,
             self._settings.max_goal_recoveries,
         )
+        self.last_claim_acquired = claimed
         if not claimed:
             return self.view(goal_id, actor)
         # The claim is durable before any subtask runs. A crash after this commit
@@ -209,18 +229,27 @@ class CoordinationService:
         while path.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
 
-    def recover(self, goal_id: str) -> bool:
-        """Resume one goal for its owning principal. A lost claim does no work."""
+    def recover(self, goal_id: str) -> GoalRecovery:
+        """Resume one goal. The result names the outcome, not merely that a row changed."""
         goal = self._session.get(Goal, goal_id)
         if goal is None or goal.status not in {"planned", "running"}:
-            return False
+            return GoalRecovery("skipped", False)
         actor = self._session.get(Principal, goal.principal_id)
         if actor is None:
-            return False
-        before = (goal.status, goal.revision, goal.updated_at)
+            return GoalRecovery("failed", False)
+        self.last_claim_acquired = False
         self.advance(goal_id, actor)
         self._session.refresh(goal)
-        return (goal.status, goal.revision, goal.updated_at) != before
+        claimed = self.last_claim_acquired
+        if goal.status == "completed":
+            return GoalRecovery("succeeded", claimed)
+        if goal.status == "uncertain":
+            return GoalRecovery("uncertain", claimed)
+        if goal.status == "failed":
+            return GoalRecovery("failed", claimed)
+        if not claimed:
+            return GoalRecovery("not_claimed", False)
+        return GoalRecovery("deferred", True)
 
     def exhaust(self, goal_id: str) -> None:
         """Stop a goal that has used its recovery budget. It does not start work."""
@@ -239,6 +268,17 @@ class CoordinationService:
         goal = self._owned(goal_id, actor)
         rows = self._subtasks(goal.id)
         if any(row.status == "uncertain" or row.error_code == "outcome_uncertain" for row in rows):
+            raise DomainError(
+                "outcome_uncertain",
+                "An uncertain operation cannot be replanned or retried.",
+            )
+        if any(
+            unresolved_external_outcome(
+                latest_execution_for_step(self._session, row.plan_step_id or "")
+            )
+            for row in rows
+            if row.plan_step_id
+        ):
             raise DomainError(
                 "outcome_uncertain",
                 "An uncertain operation cannot be replanned or retried.",
@@ -532,9 +572,19 @@ class CoordinationService:
                 operation_hash=self._recomputed_hash(step, actor.id),
             )
         except DomainError as exc:
-            code = "outcome_uncertain" if exc.code == "outcome_uncertain" else exc.code
-            status = "uncertain" if code == "outcome_uncertain" else "failed"
-            self._close(invocation, status, None, code)
+            persisted = latest_execution_for_step(self._session, step.id)
+            if persisted is not None:
+                subtask.execution_id = persisted.id
+            uncertain = unresolved_external_outcome(persisted)
+            code = "outcome_uncertain" if uncertain else exc.code
+            status = "uncertain" if uncertain else "failed"
+            detail = {
+                "raised_code": exc.code,
+                "execution_status": None if persisted is None else persisted.status,
+                "outcome_certainty": None if persisted is None else persisted.outcome_certainty,
+                "execution_error_code": None if persisted is None else persisted.error_code,
+            }
+            self._close(invocation, status, detail, code)
             subtask.status = status
             subtask.error_code = code
             return True

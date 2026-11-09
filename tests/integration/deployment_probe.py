@@ -26,8 +26,9 @@ COMPOSE_FILE = ROOT / "infrastructure" / "docker" / "compose.acceptance.yml"
 COMPOSE = ["docker", "compose", "-p", "apex-m52", "-f", str(COMPOSE_FILE)]
 HOST = os.environ.get("APEX_DEPLOY_HOST", "127.0.0.1")
 API = f"http://{HOST}:18080"
-WORKER = f"http://{HOST}:18081"
 PROD = f"http://{HOST}:18082"
+PASSWORD = "acceptance-only-db-password"
+PRIVATE_KEY = ""
 SEQUENTIAL = (
     "Coordinate sequentially: count the words in 'alpha beta' then count the words in 'gamma'"
 )
@@ -40,6 +41,8 @@ DISPOSABLE_VOLUMES = ("apex_m52_disposable", "apex_m52_keys")
 
 
 def main() -> None:
+    os.environ["APEX_POSTGRES_PASSWORD"] = PASSWORD
+    SECRETS.append(PASSWORD)
     text = "\n".join(
         line
         for line in COMPOSE_FILE.read_text(encoding="utf-8").splitlines()
@@ -262,7 +265,7 @@ def _production_image() -> None:
             "--name",
             "apex-m52-prod",
             "-p",
-            "18082:8000",
+            "127.0.0.1:18082:8000",
             "apex-ai:m52",
         ]
     )
@@ -306,6 +309,9 @@ def _production_image() -> None:
         raise SystemExit("production image accepted development authentication")
     if b"BEGIN" in refused.stdout or b"BEGIN" in refused.stderr:
         raise SystemExit("production refusal printed key material")
+    database_url = f"postgresql+psycopg://apex:{PASSWORD}@postgres:5432/apex"
+    env = os.environ.copy()
+    env["APEX_DATABASE_URL"] = database_url
     _run(
         [
             "docker",
@@ -320,14 +326,15 @@ def _production_image() -> None:
             "-e",
             "APEX_DEV_AUTH_ENABLED=false",
             "-e",
-            "APEX_DATABASE_URL=postgresql+psycopg://apex:apex@postgres:5432/apex",
+            "APEX_DATABASE_URL",
             "-e",
             "APEX_INSTANCE_ID=prod-worker",
             "-e",
             "APEX_WORKER_INTERVAL_SECONDS=1",
             "apex-ai:m52",
             "apex-worker",
-        ]
+        ],
+        env=env,
     )
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -410,6 +417,7 @@ def _reset() -> None:
 
 
 def _keys() -> None:
+    global PRIVATE_KEY
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_pem = private.private_bytes(
         encoding=serialization.Encoding.PEM,
@@ -425,6 +433,7 @@ def _keys() -> None:
         .decode("ascii")
     )
     SECRETS.append(private_pem)
+    PRIVATE_KEY = private_pem
     subprocess.run(["docker", "volume", "create", "apex_m52_keys"], check=True, timeout=30)
     _write_key("private.pem", private_pem)
     _write_key("public.pem", public_pem)
@@ -505,10 +514,25 @@ def _wait_worker() -> None:
 
 
 def _wait_worker_status(expected: int) -> None:
+    script = (
+        "import urllib.error, urllib.request\n"
+        "try:\n"
+        "    print(urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2).status)\n"
+        "except urllib.error.HTTPError as exc:\n"
+        "    print(exc.code)\n"
+        "except Exception:\n"
+        "    print(0)\n"
+    )
     deadline = time.monotonic() + 40
     while time.monotonic() < deadline:
-        status, _body = _send_url(WORKER + "/health")
-        if status == expected:
+        completed = subprocess.run(
+            ["docker", "exec", "apex-m52-worker", "python", "-c", script],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+        text = (completed.stdout or b"").decode(errors="replace").strip()
+        if text == str(expected):
             return
         time.sleep(0.5)
     raise SystemExit(f"worker health did not become {expected}")
@@ -579,7 +603,7 @@ def _token(subject: str) -> str:
         dev_auth_enabled=True,
         auth_issuer=ISSUER,
         auth_audience=AUDIENCE,
-        auth_private_key_pem=SECRETS[0],
+        auth_private_key_pem=PRIVATE_KEY,
     )
     token = issue_dev_token(settings, subject)
     if token not in SECRETS:
@@ -643,7 +667,7 @@ def _scalar_params(statement: str, params: tuple[object, ...]) -> object:
 
 
 def _dsn() -> str:
-    return f"host={HOST} port=55433 dbname=apex user=apex password=apex"
+    return f"host={HOST} port=55433 dbname=apex user=apex password={PASSWORD}"
 
 
 def _container_id(name: str) -> str:
@@ -665,9 +689,9 @@ def _exists(args: list[str]) -> bool:
     return completed.returncode == 0
 
 
-def _run(args: list[str], timeout: int = 180) -> str:
+def _run(args: list[str], timeout: int = 180, env: dict[str, str] | None = None) -> str:
     print(" ".join(args), flush=True)
-    completed = subprocess.run(args, capture_output=True, timeout=timeout, check=False)
+    completed = subprocess.run(args, capture_output=True, timeout=timeout, check=False, env=env)
     output = (completed.stdout + completed.stderr).decode(errors="replace")
     if completed.returncode != 0:
         raise SystemExit(safe(output[-4000:]))

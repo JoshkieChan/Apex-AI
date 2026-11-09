@@ -1,7 +1,14 @@
 # Disposable M5.2 acceptance stack. Project name apex-m52.
-# Volume apex_m52_disposable. Host ports 55433, 18080, and 18081.
+# Volume apex_m52_disposable. API is published on 127.0.0.1:18080 only.
+# PostgreSQL is published on 127.0.0.1:55433 so the probe can run SQL.
+# Worker health stays on the container network. It is not published on the host.
 # Do not point this file at docker_apex_pg_data or port 5432.
+# APEX_POSTGRES_PASSWORD is required. There is no default password.
 # Cleanup is: docker compose -p apex-m52 -f infrastructure/docker/compose.acceptance.yml down -v
+#
+# worker-b is an acceptance probe for an unexpired lease. It is not a supported
+# second worker. Horizontal scaling is unsupported: a live owner is not fenced
+# after the lease expires.
 
 name: apex-m52
 
@@ -11,10 +18,10 @@ services:
     container_name: apex-m52-postgres
     environment:
       POSTGRES_USER: apex
-      POSTGRES_PASSWORD: apex
+      POSTGRES_PASSWORD: ${APEX_POSTGRES_PASSWORD:?APEX_POSTGRES_PASSWORD is required}
       POSTGRES_DB: apex
     ports:
-      - "55433:5432"
+      - "127.0.0.1:55433:5432"
     volumes:
       - apex_m52_disposable:/var/lib/postgresql/data
     healthcheck:
@@ -31,7 +38,7 @@ services:
       dockerfile: infrastructure/docker/Dockerfile
     command: ["alembic", "upgrade", "head"]
     environment:
-      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+      APEX_DATABASE_URL: postgresql+psycopg://apex:${APEX_POSTGRES_PASSWORD}@postgres:5432/apex
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,7 +52,7 @@ services:
       APEX_DEV_AUTH_ENABLED: "true"
       APEX_SEED_DEV_PRINCIPALS: "true"
       APEX_DEFER_GOAL_EXECUTION: "true"
-      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+      APEX_DATABASE_URL: postgresql+psycopg://apex:${APEX_POSTGRES_PASSWORD}@postgres:5432/apex
       APEX_MODEL_PROVIDER: mock
       APEX_INSTANCE_ID: api
       APEX_AUTH_ISSUER: https://apex.test/issuer
@@ -54,7 +61,7 @@ services:
       APEX_AUTH_PRIVATE_KEY_FILE: /keys/private.pem
       APEX_LOG_LEVEL: INFO
     ports:
-      - "18080:8000"
+      - "127.0.0.1:18080:8000"
     volumes:
       - apex_m52_keys:/keys:ro
     depends_on:
@@ -85,7 +92,7 @@ services:
       APEX_DEV_AUTH_ENABLED: "false"
       APEX_SEED_DEV_PRINCIPALS: "false"
       APEX_DEFER_GOAL_EXECUTION: "true"
-      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+      APEX_DATABASE_URL: postgresql+psycopg://apex:${APEX_POSTGRES_PASSWORD}@postgres:5432/apex
       APEX_MODEL_PROVIDER: mock
       APEX_INSTANCE_ID: worker
       APEX_WORKER_HEALTH_PORT: "8001"
@@ -93,8 +100,6 @@ services:
       APEX_LEASE_SECONDS: "60"
       APEX_WORKER_SHUTDOWN_SECONDS: "20"
       APEX_LOG_LEVEL: INFO
-    ports:
-      - "18081:8001"
     tmpfs:
       - /hold:mode=1777
     depends_on:
@@ -127,7 +132,7 @@ services:
       APEX_DEV_AUTH_ENABLED: "false"
       APEX_SEED_DEV_PRINCIPALS: "false"
       APEX_DEFER_GOAL_EXECUTION: "true"
-      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+      APEX_DATABASE_URL: postgresql+psycopg://apex:${APEX_POSTGRES_PASSWORD}@postgres:5432/apex
       APEX_MODEL_PROVIDER: mock
       APEX_INSTANCE_ID: worker-b
       APEX_WORKER_HEALTH_PORT: "8001"

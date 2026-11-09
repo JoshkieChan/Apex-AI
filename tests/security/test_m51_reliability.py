@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -38,14 +40,15 @@ from apex.persistence.models import (
 from apex.runtime_ids import new_id
 from apex.secrets import FileSecretProvider, VaultSecretProvider
 from apex.verification.engine import assess_claim, verify_artifact, verify_execution
-from apex.worker import recover_available
+from apex.worker import RecoveryReport, recover_available, serve
+from apex.worker_status import WorkerStatus
 
 
 def test_a_persisted_goal_resumes_without_run(client: TestClient) -> None:
     started = _goal(client, SEQUENTIAL, max_waves=0)
     assert started["status"] == "running"
     assert all(row["execution_id"] is None for row in started["subtasks"])
-    assert _recover(client) >= 1
+    assert _recover(client).goals_succeeded >= 1
     finished = client.get(f"/v1/goals/{started['id']}", headers=auth()).json()
     assert finished["status"] == "completed"
     assert finished["verifications"][0]["status"] == "passed"
@@ -56,7 +59,7 @@ def test_completed_work_is_not_repeated_after_restart(client: TestClient) -> Non
     started = _goal(client, SEQUENTIAL, max_waves=1)
     first = {row["key"]: row for row in started["subtasks"]}
     before = _execution_count(client)
-    assert _recover(client) >= 1
+    assert _recover(client).goals_succeeded >= 1
     finished = client.get(f"/v1/goals/{started['id']}", headers=auth()).json()
     again = {row["key"]: row for row in finished["subtasks"]}
     assert finished["status"] == "completed"
@@ -68,12 +71,14 @@ def test_completed_work_is_not_repeated_after_restart(client: TestClient) -> Non
 def test_a_live_lease_blocks_a_second_worker(client: TestClient) -> None:
     started = _goal(client, SEQUENTIAL, max_waves=1)
     _hold_lease(client, started["id"], hours=1)
-    assert _recover(client) == 0
+    blocked = _recover(client)
+    assert blocked.goals_claimed == 0
+    assert blocked.tasks_handled == 0
     waiting = client.get(f"/v1/goals/{started['id']}", headers=auth()).json()
     assert waiting["status"] == "running"
     assert {row["key"]: row["status"] for row in waiting["subtasks"]}["s1"] == "pending"
     _hold_lease(client, started["id"], hours=-1)
-    assert _recover(client) >= 1
+    assert _recover(client).goals_succeeded >= 1
     finished = client.get(f"/v1/goals/{started['id']}", headers=auth()).json()
     assert finished["status"] == "completed"
 
@@ -317,12 +322,14 @@ def test_claim_assessment_and_artifacts_do_not_invent_success() -> None:
     assert missing.status.value == "failed"
 
 
-def test_database_outage_does_not_crash_the_worker(client: TestClient) -> None:
+def test_database_outage_does_not_crash_the_worker(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     class _Down:
         def __call__(self) -> Session:
             raise SQLAlchemyError("database unavailable")
 
-    assert (
+    with pytest.raises(SQLAlchemyError):
         recover_available(
             factory=_Down(),  # type: ignore[arg-type]
             settings=client.app.state.settings,
@@ -330,8 +337,42 @@ def test_database_outage_does_not_crash_the_worker(client: TestClient) -> None:
             provider=client.app.state.provider,
             clock=client.app.state.clock,
         )
-        == 0
+    monkeypatch.setattr("apex.worker.probe_database", lambda _factory: False)
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        database_url=f"sqlite+pysqlite:///{(tmp_path / 'outage.db').as_posix()}",
+        model_provider="mock",
+        worker_health_port=0,
+        worker_interval_seconds=30,
+        worker_shutdown_seconds=1,
+        log_level="WARNING",
+        instance_id="outage-worker",
     )
+    stop = threading.Event()
+    seen: list[WorkerStatus] = []
+    thread = threading.Thread(
+        target=serve,
+        args=(settings, stop),
+        kwargs={"status_out": seen},
+        daemon=True,
+    )
+    thread.start()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if seen and seen[0].snapshot()["status"] == "degraded":
+            break
+        time.sleep(0.05)
+    assert seen
+    body = seen[0].snapshot()
+    assert body["status"] == "degraded"
+    assert body["database"] == "unavailable"
+    assert body["recovery_successes"] == 0
+    assert body["poll_failures"] >= 1
+    assert body["recovery_failures"] == 0
+    stop.set()
+    thread.join(5)
+    assert not thread.is_alive()
 
 
 def test_several_goals_resume_in_one_pass(client: TestClient) -> None:
@@ -572,7 +613,7 @@ def test_ready_requires_a_current_schema(engine: object) -> None:
         assert live.get("/ready").status_code == 503
 
 
-def _recover(client: TestClient) -> int:
+def _recover(client: TestClient) -> RecoveryReport:
     return recover_available(
         factory=client.app.state.session_factory,
         settings=client.app.state.settings,
