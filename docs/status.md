@@ -15,8 +15,8 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - Execution-time comparison of a delegated payload's resource fields with the delegation scope. Direct calls do not gain that check. The scope is part of the operation hash.
 - Approval binding to a canonical SHA-256 operation hash, including capability version, schema hash, and delegation resource scope.
 - Separation of duties, approval expiry, replay rejection, and schema-change rejection.
-- Lease compare-and-swap so a live lease is not taken by another worker.
-- Uncertain outcome for a non-idempotent call whose result is lost after a possible write. The worker does not retry it.
+- Lease compare-and-swap so a live lease is not taken by another worker. Horizontal scaling is unsupported: a worker that continues after lease expiry is not fenced. The supported deployment runs one worker.
+- Uncertain outcome for a non-idempotent call whose result is lost after a possible write. The persisted execution, not the exception code, decides the goal. A `timed_out` exception does not mark that goal failed. The worker does not retry it, and replan does not repeat it.
 - Authorized reconciliation of that outcome from fixture state (`possibly_sent`, `confirmed_success`, `confirmed_failure`, `inconclusive`, `not_sent`).
 - In-process MCP fixture (`records_lookup`, `records_update`) discovered through the MCP SDK and executed only after explicit registration.
 - Remote Streamable HTTP MCP registration with endpoint checks, secret references, and execution through the same engine. A schema change marks the tool unavailable until it is registered again.
@@ -55,6 +55,25 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - Distributed workers, Kubernetes, and external side effects beyond the in-memory fixture
 - Billing, admin dashboards, and autonomous self-improvement
 - Rewriting or expiring immutable database backups
+
+## Verification recorded for the M5.2 remediation
+
+Commands ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for pytest was Compose service `docker-postgres-1` on `localhost:5432`. No Alembic revision was added. Schema remains `0006_reliability`.
+
+- `ruff check .` — all checks passed
+- `ruff format --check .` — 164 files already formatted
+- `mypy` — no issues in 98 source files
+- `pytest` with `APEX_POSTGRES_TEST_URL=postgresql+psycopg://apex:apex@host.docker.internal:5432/apex` — 150 passed, 1 skipped, 0 failed
+
+The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that container image has no Docker CLI. The same test, run on the host with `python -m pytest --noconftest tests/security/test_deployment_compose.py`, passed. Missing `APEX_POSTGRES_PASSWORD` makes `docker compose config` fail. With a dummy password the rendered API port is `host_ip: 127.0.0.1` and `published: "8000"`. PostgreSQL and worker health are not published. `APEX_DEV_AUTH_ENABLED` is false and `APEX_ENVIRONMENT` is production.
+
+`python -m tests.integration.deployment_probe` printed `deployment-ok` and exited 0. It used Compose project `apex-m52`, volume `apex_m52_disposable`, and image `apex-ai:m52`. The probe upgraded an empty database, downgraded to base, and upgraded again to `0006_reliability`. It completed a deferred goal without `/run`, restarted the API without replacing the worker, kept approval, cancellation, completion, and uncertainty in place, failed an exhausted goal, recovered after a worker kill without a second execution of the committed step, restarted the API and worker, and recovered from a database outage. The production image stayed fail-closed: development authentication did not start, and the acceptance worker stopped within its grace period. Container logs did not contain the key or the database password.
+
+After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0006_reliability`.
+
+GitHub Actions was not run. These changes are uncommitted on `d832cf1`, and no push was authorized. The earlier successful run on `d832cf1` does not cover this remediation.
+
+Live Vault and live OIDC were not called.
 
 ## Verification recorded for M5.2
 

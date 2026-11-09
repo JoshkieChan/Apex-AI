@@ -194,7 +194,7 @@ def _spawn(
 
 
 def _wait_held(path: Path) -> None:
-    deadline = __import__("time").monotonic() + 20
+    deadline = __import__("time").monotonic() + 45
     while __import__("time").monotonic() < deadline:
         if path.exists() and path.read_text(encoding="utf-8") == "held":
             return

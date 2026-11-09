@@ -301,6 +301,10 @@ class ExecutionEngine:
             record.error_code = exc.code
             record.error_message = exc.message
             record.finished_at = self._clock.now()
+            evidence = dict(record.evidence or {})
+            evidence["raised_code"] = exc.code
+            evidence["outcome_certainty"] = "possibly_sent"
+            record.evidence = evidence
             self._session.commit()
             return
         status = (
@@ -316,6 +320,28 @@ class ExecutionEngine:
         record.error_message = exc.message
         record.finished_at = self._clock.now()
         self._session.commit()
+
+
+def unresolved_external_outcome(execution: Execution | None) -> bool:
+    """True when the persisted row says an external side effect may have happened.
+
+    A timeout code by itself is not enough. An idempotent timeout stays
+    `inconclusive`, and a failure before the operation is sent has no row or
+    stays `not_sent`.
+    """
+    if execution is None:
+        return False
+    if execution.status == ExecutionStatus.uncertain.value:
+        return True
+    return execution.outcome_certainty == "possibly_sent"
+
+
+def latest_execution_for_step(session: Session, plan_step_id: str) -> Execution | None:
+    """Return the newest persisted attempt for a plan step, if one exists."""
+    rows = executions_for_step(session, plan_step_id)
+    if not rows:
+        return None
+    return rows[-1]
 
 
 def _object(value: Any) -> dict[str, Any]:

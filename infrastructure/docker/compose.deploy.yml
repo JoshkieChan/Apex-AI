@@ -1,6 +1,17 @@
-# Supported Apex deployment. This file does not attach the development database.
+# Local deployment scaffold. This file does not attach the development database.
 # The development database is infrastructure/docker/compose.yaml on host port 5432,
-# volume docker_apex_pg_data. This stack uses host port 5433 and apex_deploy_pg_data.
+# volume docker_apex_pg_data. This stack uses volume apex_deploy_pg_data and does
+# not publish PostgreSQL or the worker.
+#
+# This is production-mode configuration for a local validation scaffold. It is not
+# an internet-reachable deployment. The API is bound to loopback. Put TLS and a
+# reverse proxy in front of it before any other interface is exposed. Authentication
+# stays fail-closed: development auth is off, and /ready stays 503 until identity
+# is configured outside this file.
+#
+# APEX_POSTGRES_PASSWORD is required. Compose fails if it is missing. There is no
+# default password. One worker is the supported topology. A second worker is not
+# fenced after its lease expires.
 #
 # The image command is the API. The worker service replaces that command.
 # Migrations run once in the migrate service. Neither process migrates on startup.
@@ -12,10 +23,8 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: apex
-      POSTGRES_PASSWORD: apex
+      POSTGRES_PASSWORD: ${APEX_POSTGRES_PASSWORD:?APEX_POSTGRES_PASSWORD is required}
       POSTGRES_DB: apex
-    ports:
-      - "5433:5432"
     volumes:
       - apex_deploy_pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -32,7 +41,7 @@ services:
       dockerfile: infrastructure/docker/Dockerfile
     command: ["alembic", "upgrade", "head"]
     environment:
-      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+      APEX_DATABASE_URL: postgresql+psycopg://apex:${APEX_POSTGRES_PASSWORD}@postgres:5432/apex
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,12 +54,12 @@ services:
       APEX_DEV_AUTH_ENABLED: "false"
       APEX_SEED_DEV_PRINCIPALS: "false"
       APEX_DEFER_GOAL_EXECUTION: "true"
-      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+      APEX_DATABASE_URL: postgresql+psycopg://apex:${APEX_POSTGRES_PASSWORD}@postgres:5432/apex
       APEX_MODEL_PROVIDER: mock
       APEX_INSTANCE_ID: api
       APEX_SECRET_PROVIDER: env
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -79,7 +88,7 @@ services:
       APEX_DEV_AUTH_ENABLED: "false"
       APEX_SEED_DEV_PRINCIPALS: "false"
       APEX_DEFER_GOAL_EXECUTION: "true"
-      APEX_DATABASE_URL: postgresql+psycopg://apex:apex@postgres:5432/apex
+      APEX_DATABASE_URL: postgresql+psycopg://apex:${APEX_POSTGRES_PASSWORD}@postgres:5432/apex
       APEX_MODEL_PROVIDER: mock
       APEX_INSTANCE_ID: worker
       APEX_WORKER_HEALTH_PORT: "8001"
@@ -87,8 +96,6 @@ services:
       APEX_LEASE_SECONDS: "60"
       APEX_WORKER_SHUTDOWN_SECONDS: "20"
       APEX_SECRET_PROVIDER: env
-    ports:
-      - "8001:8001"
     depends_on:
       migrate:
         condition: service_completed_successfully

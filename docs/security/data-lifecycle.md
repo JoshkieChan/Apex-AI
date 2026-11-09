@@ -37,23 +37,23 @@ An active or completed goal does not block that purge. The goal row remains. Inv
 
 ## Derived context
 
-Redaction runs on `context_records.content` for each purged memory. The deleted string is compared after Unicode case folding and after collapsing whitespace to single spaces. A match requires at least 12 characters in that normalized form. The matched span, including the original case and spacing, is replaced with `[redacted]`. The row stays.
+Redaction runs on `context_records.content` for each purged memory. The deleted string and the stored text are compared after Unicode case folding and after collapsing each whitespace run to one space. A match requires at least 12 characters in that normalized form, including a string whose original length is shorter because one character casefolds to several. The matched original span, including the original case, spacing, and the source characters that expanded, is replaced with `[redacted]`. Surrounding text outside that span stays. The row stays.
 
 This does not match:
 
-- a secret shorter than 12 normalized characters
+- a secret whose normalized form is shorter than 12 characters, even if case folding changed it
 - a paraphrase
 - a hash or other encoding of the secret
 - a suffix or prefix that is not the whole secret
 - text that merely means the same thing
 
-Case differences and extra spaces between the same words do match.
+Case differences, casefold expansions such as `ß` to `ss` and `ﬃ` to `ffi`, and extra spaces between the same characters do match. The replacement is the original span, not an offset calculated in the expanded string.
 
 ## Operational audit
 
 `APEX_OPERATIONAL_RETENTION_DAYS` defaults to 0. Zero means Apex does not expire operational rows.
 
-When the value is positive, the worker deletes `context_records` whose `trust` is `proposal` and whose `created_at` is older than that many days. It does not delete:
+When the value is positive, the worker deletes `context_records` whose `trust` is `proposal`, whose `created_at` is older than that many days, and whose `scope_id` is not an unresolved task id, an unresolved goal id, or the task id of an unresolved goal. Unresolved means the row is not `completed`, `failed`, or `cancelled` for a task, and not `completed`, `partial`, `failed`, or `cancelled` for a goal. `uncertain`, `awaiting_approval`, `planned`, and `running` stay unresolved. It does not delete:
 
 - `trust` `trusted` context rows
 - tasks, task events, plans, plan steps, or plan revisions
@@ -61,7 +61,7 @@ When the value is positive, the worker deletes `context_records` whose `trust` i
 - executions or verifications
 - goals, subtasks, invocations, or goal events
 
-Those rows are how an operator checks who approved an operation, what was executed, and which uncertain outcome is still unresolved. Deleting them would make the authority record weaker. Proposal expiry does not run for a row that is an approval, an execution, or a goal, because those are not context proposals.
+Those rows are how an operator checks who approved an operation, what was executed, and which uncertain outcome is still unresolved. Deleting them would make the authority record weaker. A proposal tied to unresolved work stays until that work is terminal. An old proposal with no such association, including one whose work has reached a terminal state, can expire. Running expiry again removes nothing further. Proposal expiry does not run for a row that is an approval, an execution, or a goal, because those are not context proposals.
 
 ## Infrastructure
 
