@@ -23,9 +23,10 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - Independent verification of fixture reads and writes against the in-memory store.
 - Deterministic intent for the original utterances plus the two fixture utterances.
 - Mock provider plus optional OpenAI and Anthropic adapters behind one interface.
-- Alembic revisions `0001_initial` through `0007_interaction`.
+- Alembic revisions `0001_initial` through `0008_connectors`.
 - One-shot migration command `python -m apex.persistence.migrate`. API processes do not migrate on startup.
-- Production `/ready` requires the Alembic revision `0007_interaction`, an active authenticator, and a usable secret provider when an external provider is required.
+- Production `/ready` requires the Alembic revision `0008_connectors`, an active authenticator, and a usable secret provider when an external provider is required.
+- Governed connections for the in-process MCP fixture, a reference inventory API, and a reference device. Discovery does not activate an operation. Execution still goes through `ExecutionEngine`. A2A is not implemented.
 - One interaction runtime for text, images, and uploaded or recorded audio. `POST /v1/interactions` normalizes those inputs, calls the configured model, and returns text plus an optional transcript and generated audio. Conversations are not governed memory. Raw media bytes stay in temporary files, not PostgreSQL. Image understanding, transcription, and speech are off unless the configured model is explicitly enabled. The mock provider is the deterministic fixture. Live OpenAI and Anthropic perception was not called.
 - Task events, executions, verifications, and one trusted task-scoped context record after a passed verification.
 - Governed memory with personal, project, task, and system scope. Versions, provenance, reliability, logical deletion, physical purge of expired deletions, deterministic retrieval, and a context budget. Model proposals stay inferred candidates. Memory does not grant authority. Purge tombstones do not store content. Derived context redaction, operational audit retention, and backup retention are separate and are documented in `docs/security/data-lifecycle.md`.
@@ -68,6 +69,23 @@ The web client tests, type check, and production build passed: vitest 3 passed, 
 The implementation commit is `c0bcefdde6e61c799a32bf96a41975aefef6c4f9` on `m6-multimodal`. That commit was pushed to `origin/m6-multimodal`. GitHub Actions run `42731104222` (push) and run `42731180351` (pull request) both completed with success for that commit. Quality, deployment, and frontend succeeded in each run. Those runs are https://github.com/JoshkieChan/Apex-AI/actions/runs/42731104222 and https://github.com/JoshkieChan/Apex-AI/actions/runs/42731180351.
 
 Pull request https://github.com/JoshkieChan/Apex-AI/pull/2 is open from `m6-multimodal` into `master` and has not been merged. Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 remains open from `master` into `main` and has not been merged.
+
+## M7 connectors
+
+M7 records external systems as connections. The MCP fixture, the reference inventory, and the reference device are the working paths. A registrar accepts each operation. The caller still needs a grant, and a high-risk note still needs a different principal's approval. Connection scopes, project, expiry, and revocation are checked before the fixture changes. Schema drift disables the capability. The reference note is non-idempotent: a lost response after the write stays uncertain. The multi-system goal reads the inventory item and then sets the reference device label. Verification reads those stores. A2A is documented in `docs/decisions/0016-a2a-boundary.md` and is not implemented. OAuth is not implemented. No live third-party account was called.
+
+Schema revision is `0008_connectors`. Connection gates and the reference inventory and device are process-local. The worker process still loads only the built-in capabilities, as it did for MCP. A revoked or drifted capability is disabled in the process that accepted it.
+
+Local verification ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for pytest was Compose service `docker-postgres-1`. The run upgraded that database to `0008_connectors`.
+
+- `ruff check .` — all checks passed
+- `ruff format --check .` — 192 files already formatted
+- `mypy` — no issues in 112 source files
+- `pytest` with `APEX_POSTGRES_TEST_URL` set — 181 passed, 1 skipped, 0 failed
+
+The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that image has no Docker CLI. `python -m tests.integration.deployment_probe` then ran with Docker Compose 2.26.1 and the host daemon. It printed `deployment-ok` and exited 0. The probe used project `apex-m52` and volumes `apex_m52_disposable` and `apex_m52_keys`. It included the schema round trip to `0008_connectors`, a goal completed without `/run`, API and worker restarts, approval preservation, database outage, the production image, and a graceful worker stop. After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0008_connectors`.
+
+No connector management interface was added, so the web client was not rebuilt for this change. The commit SHA and GitHub Actions run ids for this branch are recorded after the push.
 
 ## Deferred
 

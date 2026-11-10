@@ -38,6 +38,18 @@ _EXPORT = re.compile(
     re.DOTALL,
 )
 _LOOKUP = re.compile(r"^Look up fixture record (?P<name>[A-Za-z0-9][A-Za-z0-9_-]{0,63})$")
+_INVENTORY = re.compile(
+    r"^Look up reference inventory item (?P<item>[A-Za-z0-9][A-Za-z0-9_-]{0,63})"
+    r"(?: for project (?P<project>[A-Za-z0-9_-]{1,64}))?$"
+)
+_DEVICE_LABEL = re.compile(
+    r"^Set reference device label to (?P<label>[A-Za-z0-9][A-Za-z0-9_-]{0,63})$"
+)
+_NOTE = re.compile(
+    r"^Record reference note '(?P<text>[^']{1,80})' on item "
+    r"(?P<item>[A-Za-z0-9][A-Za-z0-9_-]{0,63}) as operation "
+    r"(?P<operation>[A-Za-z0-9]{8,64})$"
+)
 _UPDATE = re.compile(
     r"^Update fixture record (?P<name>[A-Za-z0-9][A-Za-z0-9_-]{0,63}) "
     r"status to (?P<status>[A-Za-z0-9][A-Za-z0-9_-]{0,63})$"
@@ -164,6 +176,46 @@ def _deterministic(text: str, registry: CapabilityRegistry) -> Intent:
                 ).hexdigest()[:32],
             },
         )
+    inventory = _INVENTORY.match(text)
+    if inventory is not None:
+        payload = {"item": inventory.group("item")}
+        if inventory.group("project"):
+            payload["project_key"] = inventory.group("project")
+        return _mcp_intent(
+            registry,
+            capability_id="api.reference.lookup",
+            permission_key="reference.lookup",
+            objective=f"Look up reference inventory item {inventory.group('item')}.",
+            risk=RiskLevel.low,
+            expected="The reference inventory item matches the stored row.",
+            payload=payload,
+        )
+    noted = _NOTE.match(text)
+    if noted is not None:
+        return _mcp_intent(
+            registry,
+            capability_id="api.reference.note",
+            permission_key="reference.note",
+            objective="Store one reference inventory note.",
+            risk=RiskLevel.high,
+            expected="The reference inventory stores the note once.",
+            payload={
+                "item": noted.group("item"),
+                "text": noted.group("text"),
+                "operation_id": noted.group("operation"),
+            },
+        )
+    labeled = _DEVICE_LABEL.match(text)
+    if labeled is not None:
+        return _mcp_intent(
+            registry,
+            capability_id="device.reference-device.configure",
+            permission_key="device.configure",
+            objective="Set the reference device label.",
+            risk=RiskLevel.medium,
+            expected="The reference device stores the requested label.",
+            payload={"device_key": "reference-device", "label": labeled.group("label")},
+        )
     looked = _LOOKUP.match(text)
     if looked is not None:
         return _mcp_intent(
@@ -216,7 +268,7 @@ def _mcp_intent(
     return Intent(
         objective=objective,
         required_capabilities=[capability_id],
-        constraints=["Use the registered MCP capability through the execution engine."],
+        constraints=["Use the registered capability through the execution engine."],
         risk=risk,
         expected_outcome=expected,
         inputs={capability_id: payload},

@@ -13,8 +13,19 @@ from apex.errors import DomainError
 HARD_PERMISSIONS: dict[str, frozenset[str]] = {
     "coordinator": frozenset(),
     "planner": frozenset(),
-    "researcher": frozenset({"text.analyze", "records.lookup"}),
-    "executor": frozenset({"text.analyze", "records.lookup", "records.update", "records.export"}),
+    "researcher": frozenset({"text.analyze", "records.lookup", "reference.lookup", "device.read"}),
+    "executor": frozenset(
+        {
+            "text.analyze",
+            "records.lookup",
+            "records.update",
+            "records.export",
+            "reference.lookup",
+            "reference.note",
+            "device.read",
+            "device.configure",
+        }
+    ),
     "verifier": frozenset(),
 }
 
@@ -30,6 +41,10 @@ _FORBIDDEN = re.compile(
     r"^Coordinate a forbidden export to (?P<label>[A-Za-z0-9][A-Za-z0-9_-]{0,63})$"
 )
 _EXPORT = re.compile(r"^Coordinate an export to (?P<label>[A-Za-z0-9][A-Za-z0-9_-]{0,63})$")
+_SYSTEMS = re.compile(
+    r"^Coordinate reference systems: look up '(?P<item>[A-Za-z0-9][A-Za-z0-9_-]{0,63})' "
+    r"and label the reference device '(?P<label>[A-Za-z0-9][A-Za-z0-9_-]{0,63})'$"
+)
 
 
 @dataclass(frozen=True)
@@ -85,6 +100,9 @@ def decompose(objective: str) -> tuple[list[GraphNode], bool]:
     export = _EXPORT.match(objective)
     if export:
         return [_export("executor", export.group("label"))], False
+    systems = _SYSTEMS.match(objective)
+    if systems:
+        return _reference_systems(systems.group("item"), systems.group("label")), False
     raise DomainError("not_a_goal", "The objective is not a coordinated goal.")
 
 
@@ -182,6 +200,29 @@ def _verifier(key: str, sources: tuple[str, ...]) -> GraphNode:
         depends_on=sources,
         acceptance={"kind": "word_counts", "sources": list(sources)},
     )
+
+
+def _reference_systems(item: str, label: str) -> list[GraphNode]:
+    lookup = GraphNode(
+        key="s0",
+        agent_key="executor",
+        description="Read the reference inventory item.",
+        capability_id="api.reference.lookup",
+        input_payload={"item": item},
+        depends_on=(),
+        acceptance={"kind": "reference.lookup"},
+    )
+    configure = GraphNode(
+        key="s1",
+        agent_key="executor",
+        description="Set the reference device label.",
+        capability_id="device.reference-device.configure",
+        input_payload={"device_key": "reference-device", "label": label},
+        depends_on=("s0",),
+        acceptance={"kind": "device.configure"},
+    )
+    check = _verifier("s2", ("s0", "s1"))
+    return [lookup, configure, check]
 
 
 def _export(agent: str, label: str) -> GraphNode:

@@ -30,7 +30,7 @@ The image default command is the API, as `nobody`, with `APEX_ENVIRONMENT=produc
 ## What starts
 
 1. PostgreSQL becomes ready.
-2. `migrate` upgrades an empty or older database to `0007_interaction` and exits.
+2. `migrate` upgrades an empty or older database to `0008_connectors` and exits.
 3. The API and the worker start. Neither waits for the other.
 4. The API serves `/health` when it can query the database. `/ready` stays 503 until authentication is configured and the schema revision matches.
 5. The worker listens on `APEX_WORKER_HEALTH_PORT` inside the container (8001). That port is not published on the host. `/live` means the process is up. `/health` is 200 only when the phase is `operational`, the process is not shutting down, and the last successful poll is newer than three poll intervals (at least one second). A stuck poll becomes `degraded` and returns 503. `starting` and `shutting_down` return 503. The body separates tasks handled, goals claimed, confirmed successes, recovery failures, poll failures, uncertain recoveries, and deferred recoveries. A claim is not a success. A database poll failure increments `poll_failures` and does not increment `recovery_failures`. A completed poll does not mean a recovery succeeded.
