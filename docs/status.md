@@ -23,9 +23,10 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - Independent verification of fixture reads and writes against the in-memory store.
 - Deterministic intent for the original utterances plus the two fixture utterances.
 - Mock provider plus optional OpenAI and Anthropic adapters behind one interface.
-- Alembic revisions `0001_initial` through `0006_reliability`.
+- Alembic revisions `0001_initial` through `0007_interaction`.
 - One-shot migration command `python -m apex.persistence.migrate`. API processes do not migrate on startup.
-- Production `/ready` requires the Alembic revision `0006_reliability`, an active authenticator, and a usable secret provider when an external provider is required.
+- Production `/ready` requires the Alembic revision `0007_interaction`, an active authenticator, and a usable secret provider when an external provider is required.
+- One interaction runtime for text, images, and uploaded or recorded audio. `POST /v1/interactions` normalizes those inputs, calls the configured model, and returns text plus an optional transcript and generated audio. Conversations are not governed memory. Raw media bytes stay in temporary files, not PostgreSQL. Image understanding, transcription, and speech are off unless the configured model is explicitly enabled. The mock provider is the deterministic fixture. Live OpenAI and Anthropic perception was not called.
 - Task events, executions, verifications, and one trusted task-scoped context record after a passed verification.
 - Governed memory with personal, project, task, and system scope. Versions, provenance, reliability, logical deletion, physical purge of expired deletions, deterministic retrieval, and a context budget. Model proposals stay inferred candidates. Memory does not grant authority. Purge tombstones do not store content. Derived context redaction, operational audit retention, and backup retention are separate and are documented in `docs/security/data-lifecycle.md`.
 - Development token issuance rejects proxy headers even from a loopback peer, including `Via`, `X-Original-URL`, `CF-Connecting-IP`, and `X-Forwarded-Server`.
@@ -45,13 +46,34 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - Reconciliation of fixture updates reads the in-process store. A remote server without that independent read stays inconclusive and returns a manual reconciliation path.
 - The supported deployment does not make the service production-ready. Live Vault, live OIDC, and erasure of backups or WAL are not included.
 
+## M6 multimodal interaction
+
+M6 is implemented on branch `m6-multimodal`, stacked on the M5 head. It is a separate pull request into `master` and is not merged. The M5 closure section below records the repository before this work, including the sentence that M6 had not started.
+
+Text, PNG, JPEG, WebP, WAV, and MPEG-1 Layer III enter one interaction service. The mock provider transcribes, answers, and can return a short WAV. OpenAI and Anthropic perform those modalities only when the matching setting is enabled. Tests use the mock provider and `httpx.MockTransport`. Live OpenAI, Anthropic, Vault, and OIDC were not called. Browser recording is converted to mono WAV in `web/` before upload. WebM is not accepted by the API. Real-time duplex voice is not implemented. JPEG and WebP checks are container and dimension checks. PNG inflation is bounded by the declared dimensions.
+
+Schema revision is `0007_interaction`. Request-scoped media files are deleted when the turn finishes. Conversation retention is off unless `APEX_MEDIA_CONVERSATION_RETENTION` and `retain_media` are both set, and those files still expire. Model text is not written to governed memory. A disabled modality does not switch providers.
+
+Local verification ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for pytest was Compose service `docker-postgres-1`. The run upgraded that database to `0007_interaction`.
+
+- `ruff check .` — all checks passed
+- `ruff format --check .` — 179 files already formatted
+- `mypy` — no issues in 104 source files
+- `pytest` with `APEX_POSTGRES_TEST_URL` set — 173 passed, 1 skipped, 0 failed
+
+The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that image has no Docker CLI. `python -m tests.integration.deployment_probe` then ran with Docker Compose 2.26.1 and the host daemon. It printed `deployment-ok` and exited 0. The probe used project `apex-m52` and volume `apex_m52_disposable`. It included the schema round trip to `0007_interaction`, a goal completed without `/run`, API and worker restarts, approval preservation, database outage, the production image, and a graceful worker stop. After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0007_interaction`.
+
+The web client tests, type check, and production build passed: vitest 3 passed, `tsc --noEmit` passed, and Vite built the bundle. Browser recording was not executed. Live OpenAI, Anthropic, Vault, and OIDC were not called.
+
+The commit SHA and GitHub Actions run ids for this branch are recorded after the push.
+
 ## Deferred
 
 - A paid or hosted MCP server, stdio MCP, and any A2A implementation. External agent interoperability stays deferred.
 - Model-proposed goal graphs. Decomposition is a deterministic parser for the coordinated utterances only.
 - Exactly-once delivery to external systems
 - Embeddings and vector search
-- Multimodal, voice, mobile, and desktop clients
+- Real-time duplex voice, video understanding, mobile clients, and desktop clients
 - Distributed workers, Kubernetes, and external side effects beyond the in-memory fixture
 - Billing, admin dashboards, and autonomous self-improvement
 - Rewriting or expiring immutable database backups

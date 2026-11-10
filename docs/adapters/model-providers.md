@@ -25,3 +25,13 @@ This adapter is unit-tested with `httpx.MockTransport`. It has not been called a
 `AnthropicAdapter` posts to `{ANTHROPIC_BASE_URL}/v1/messages` with `output_config.format.type = json_schema` and header `anthropic-version` (default `2026-10-21`, from the structured-output docs checked on 2026-11-08). System messages are sent in the `system` field. The key is `ANTHROPIC_API_KEY` and the model is `ANTHROPIC_MODEL`.
 
 Same limitation: mocked tests only, no live compatibility claim.
+
+## Modalities
+
+`ModelProvider.capabilities` returns text, image understanding, audio transcription, and audio generation for the configured model. The flags default to false on OpenAI and Anthropic. Setting the provider name does not enable a modality, and a failed modality does not select another provider.
+
+`respond` accepts a `ProviderTurn`: policy text, prior text, and normalized parts. Images are bytes plus a media type. The adapter builds the vendor payload. OpenAI image input is a data URL on `{OPENAI_BASE_URL}/chat/completions` when `APEX_OPENAI_IMAGE_UNDERSTANDING` is true. Anthropic image input is a base64 source on `/v1/messages` when `APEX_ANTHROPIC_IMAGE_UNDERSTANDING` is true. Anthropic transcription and speech always raise `unsupported`.
+
+OpenAI transcription is `POST /audio/transcriptions` when `APEX_OPENAI_TRANSCRIPTION` is true and `APEX_OPENAI_TRANSCRIPTION_MODEL` is set. OpenAI speech is `POST /audio/speech` with `response_format` `wav` when `APEX_OPENAI_SPEECH` is true and `APEX_OPENAI_SPEECH_MODEL` is set. The returned audio must be a RIFF file within `APEX_MEDIA_MAX_BYTES`. Token counts are copied only when the provider sends integers. This repository does not invent a price.
+
+The mock provider declares all four capabilities. `respond` echoes `turns:{n}` and a short digest of each image. `transcribe` returns `transcript:{digest}`. `synthesize` returns a short WAV. Those strings are fixtures. They are not a measurement of perception quality. The tests use `httpx.MockTransport` for the commercial adapters and do not call live accounts.

@@ -8,6 +8,7 @@ as checked on 2026-11-08: `output_config.format.type = json_schema` and
 
 from __future__ import annotations
 
+import base64
 import time
 from typing import Any
 
@@ -16,6 +17,7 @@ import httpx
 from apex.contracts.schemas import ModelRequest, ModelResponse, TokenUsage
 from apex.providers.errors import ProviderError
 from apex.providers.http import parse_json_object, post_json
+from apex.providers.modalities import ProviderCapabilities, ProviderText, ProviderTurn
 
 
 class AnthropicAdapter:
@@ -31,6 +33,7 @@ class AnthropicAdapter:
         base_url: str = "https://api.anthropic.com",
         version: str = "2026-10-21",
         client: httpx.Client | None = None,
+        image_understanding: bool = False,
     ) -> None:
         if not api_key:
             raise ProviderError("authentication", "ANTHROPIC_API_KEY is not configured.")
@@ -42,6 +45,74 @@ class AnthropicAdapter:
         self._version = version
         self._client = client or httpx.Client()
         self._owns_client = client is None
+        self._image = image_understanding
+
+    def capabilities(self) -> ProviderCapabilities:
+        """Audio stays disabled. This adapter has no transcription or speech API."""
+        return ProviderCapabilities(
+            text=True,
+            image_understanding=self._image,
+            audio_transcription=False,
+            audio_generation=False,
+        )
+
+    def respond(self, turn: ProviderTurn) -> ProviderText:
+        if any(part.kind == "image" for part in turn.parts) and not self._image:
+            raise ProviderError("unsupported", "This model is not configured for images.")
+        blocks: list[dict[str, Any]] = []
+        if turn.policy:
+            blocks.append({"type": "text", "text": turn.policy})
+        for line in turn.history:
+            blocks.append({"type": "text", "text": line})
+        for part in turn.parts:
+            if part.kind == "image":
+                blocks.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": part.media_type,
+                            "data": base64.b64encode(part.data).decode("ascii"),
+                        },
+                    }
+                )
+            else:
+                blocks.append({"type": "text", "text": part.text})
+        started = time.perf_counter()
+        payload = post_json(
+            self._client,
+            f"{self._base_url}/v1/messages",
+            headers={
+                "x-api-key": self._api_key,
+                "anthropic-version": self._version,
+                "content-type": "application/json",
+            },
+            body={
+                "model": self.model_name,
+                "max_tokens": 1024,
+                "messages": [{"role": "user", "content": blocks}],
+            },
+            timeout=turn.timeout_seconds,
+        )
+        usage_raw = payload.get("usage")
+        usage = usage_raw if isinstance(usage_raw, dict) else {}
+        return ProviderText(
+            text=_plain_text(payload),
+            usage=TokenUsage(
+                input_tokens=_optional_int(usage.get("input_tokens")),
+                output_tokens=_optional_int(usage.get("output_tokens")),
+                total_tokens=None,
+            ),
+            latency_ms=int((time.perf_counter() - started) * 1000),
+        )
+
+    def transcribe(self, audio: bytes, media_type: str, timeout: float) -> str:
+        del audio, media_type, timeout
+        raise ProviderError("unsupported", "This provider does not transcribe audio.")
+
+    def synthesize(self, text: str, timeout: float) -> tuple[bytes, str]:
+        del text, timeout
+        raise ProviderError("unsupported", "This provider does not generate speech.")
 
     def close(self) -> None:
         if self._owns_client:
@@ -124,6 +195,25 @@ def _extract_text_json(payload: dict[str, Any]) -> dict[str, Any]:
     if not texts:
         raise ProviderError("invalid_output", "The model provider returned no text content.")
     return parse_json_object("".join(texts))
+
+
+def _plain_text(payload: dict[str, Any]) -> str:
+    blocks = payload.get("content")
+    if not isinstance(blocks, list):
+        raise ProviderError("invalid_output", "The model provider returned no content.")
+    texts = [
+        block["text"]
+        for block in blocks
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
+    ]
+    if not texts:
+        raise ProviderError("invalid_output", "The model provider returned no text content.")
+    text = "".join(texts)
+    if len(text) > 16_000:
+        raise ProviderError("invalid_output", "The model provider returned an unbounded response.")
+    return text
 
 
 def _optional_int(value: object) -> int | None:

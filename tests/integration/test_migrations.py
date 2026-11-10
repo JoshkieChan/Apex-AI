@@ -88,11 +88,19 @@ def test_fresh_postgres_upgrades_downgrades_and_runs_a_goal(
         engine = create_engine(fresh_url)
         inspector = inspect(engine)
         names = set(inspector.get_table_names())
-        assert {"goals", "goal_verifications", "memory_purges", "alembic_version"} <= names
+        assert {
+            "goals",
+            "goal_verifications",
+            "memory_purges",
+            "conversations",
+            "interactions",
+            "media_objects",
+            "alembic_version",
+        } <= names
         goal_columns = {column["name"] for column in inspector.get_columns("goals")}
         assert {"lease_owner", "lease_expires_at", "recovery_attempts"} <= goal_columns
         version = engine.connect().execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert version == "0006_reliability"
+        assert version == "0007_interaction"
         engine.dispose()
         application = create_app(
             settings=Settings(

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.engine import Engine
 
@@ -12,6 +16,7 @@ from apex.api.errors import ApiError
 from apex.api.routes.admin import router as admin_router
 from apex.api.routes.goals import router as goals_router
 from apex.api.routes.health import router as health_router
+from apex.api.routes.interactions import router as interactions_router
 from apex.api.routes.memory import router as memory_router
 from apex.api.routes.reconciliation import router as reconciliation_router
 from apex.api.routes.tasks import router as tasks_router
@@ -49,12 +54,22 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.state.provider = build_provider(resolved)
     app.state.clock = SystemClock()
     app.state.authenticator = TokenAuthenticator(resolved)
+    app.state.media_root = _media_root(resolved)
+    origins = [item.strip() for item in resolved.cors_origins.split(",") if item.strip()]
+    if origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+        )
     app.include_router(health_router)
     app.include_router(tasks_router)
     app.include_router(admin_router)
     app.include_router(reconciliation_router)
     app.include_router(memory_router)
     app.include_router(goals_router)
+    app.include_router(interactions_router)
 
     @app.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
@@ -97,6 +112,14 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
         )
 
     return app
+
+
+def _media_root(settings: Settings) -> Path:
+    if settings.media_dir:
+        root = Path(settings.media_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    return Path(tempfile.mkdtemp(prefix="apex-media-"))
 
 
 def _request_id(request: Request) -> str:

@@ -2,7 +2,14 @@
 
 These instructions apply to every coding agent and human change in this repository.
 
-Read the architecture docs and the modules you are about to change before editing them. Do not invent a parallel structure when an extension point already exists.
+Read these before changing the system:
+
+- `docs/architecture/apex-sovereignty.md`
+- `docs/engineering/agent-execution-contract.md`
+- `docs/status.md`
+- the decision records in `docs/decisions/` that apply to the modules you will change
+
+Then read the modules themselves. Do not invent a parallel structure when an extension point already exists. The current Alembic revision is `0007_interaction`.
 
 ## Product identity
 
@@ -50,7 +57,7 @@ Agents are roles in `apex.agents` for a single task, and logical agents in `apex
 
 ## Persistence
 
-- Schema changes go through Alembic. Do not call `create_all` on application startup. The current revision is `0006_reliability`.
+- Schema changes go through Alembic. Do not call `create_all` on application startup. The current revision is `0007_interaction`.
 - Keep relational columns for identity, status, and relationships. JSON is only for validated payloads.
 - Use transactions around state transitions and execution records.
 - Do not delete audit rows to make a test pass. Physical purge of an already deleted memory removes that memory's content rows, redacts matching derived context text, and leaves a tombstone without the content. It does not erase task, execution, approval, or goal audit rows, and it does not rewrite backups or WAL. Those are separate retention rules. See `docs/security/data-lifecycle.md`.
