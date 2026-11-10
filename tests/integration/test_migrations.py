@@ -98,12 +98,13 @@ def test_fresh_postgres_upgrades_downgrades_and_runs_a_goal(
             "connections",
             "connection_operations",
             "devices",
+            "runtime_controls",
             "alembic_version",
         } <= names
         goal_columns = {column["name"] for column in inspector.get_columns("goals")}
         assert {"lease_owner", "lease_expires_at", "recovery_attempts"} <= goal_columns
         version = engine.connect().execute(text("SELECT version_num FROM alembic_version")).scalar()
-        assert version == "0008_connectors"
+        assert version == "0009_controls"
         engine.dispose()
         application = create_app(
             settings=Settings(

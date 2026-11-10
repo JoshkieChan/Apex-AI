@@ -23,9 +23,10 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - Independent verification of fixture reads and writes against the in-memory store.
 - Deterministic intent for the original utterances plus the two fixture utterances.
 - Mock provider plus optional OpenAI and Anthropic adapters behind one interface.
-- Alembic revisions `0001_initial` through `0008_connectors`.
+- Alembic revisions `0001_initial` through `0009_controls`.
 - One-shot migration command `python -m apex.persistence.migrate`. API processes do not migrate on startup.
-- Production `/ready` requires the Alembic revision `0008_connectors`, an active authenticator, and a usable secret provider when an external provider is required.
+- Production `/ready` requires the Alembic revision `0009_controls`, an active authenticator, and a usable secret provider when an external provider is required.
+- An operator with `operations.suspend` can hold new capability execution. Completed and uncertain rows stay as they are. The hold is not a grant and cannot be delegated.
 - Governed connections for the in-process MCP fixture, a reference inventory API, and a reference device. Discovery does not activate an operation. Execution still goes through `ExecutionEngine`. A2A is not implemented.
 - One interaction runtime for text, images, and uploaded or recorded audio. `POST /v1/interactions` normalizes those inputs, calls the configured model, and returns text plus an optional transcript and generated audio. Conversations are not governed memory. Raw media bytes stay in temporary files, not PostgreSQL. Image understanding, transcription, and speech are off unless the configured model is explicitly enabled. The mock provider is the deterministic fixture. Live OpenAI and Anthropic perception was not called.
 - Task events, executions, verifications, and one trusted task-scoped context record after a passed verification.
@@ -45,7 +46,7 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - OIDC discovery and JWKS fetches are implemented. Tests inject the documents. A live identity provider was not called.
 - The Vault KV v2 client is implemented and tested with a mock HTTP transport. A production Vault server is not provisioned here.
 - Reconciliation of fixture updates reads the in-process store. A remote server without that independent read stays inconclusive and returns a manual reconciliation path.
-- The supported deployment does not make the service production-ready. Live Vault, live OIDC, and erasure of backups or WAL are not included.
+- The supported deployment is one API process and one worker. That topology is the v1.0 release candidate. It is not a measured production SLA. Live Vault, live OIDC, and erasure of backups or WAL are not included.
 
 ## M6 multimodal interaction
 
@@ -90,6 +91,27 @@ No connector management interface was added, so the web client was not rebuilt f
 The implementation commit is `c96afec0fb8371efcff2e9a943e47c01e1b1865f` on `m7-connectors`. That commit was pushed to `origin/m7-connectors`. GitHub Actions run `42735312091` (push) and run `42735376937` (pull request) both completed with success for that commit. Quality, deployment, and frontend succeeded in each run. Those runs are https://github.com/JoshkieChan/Apex-AI/actions/runs/42735312091 and https://github.com/JoshkieChan/Apex-AI/actions/runs/42735376937.
 
 Pull request https://github.com/JoshkieChan/Apex-AI/pull/3 is open from `m7-connectors` into `m6-multimodal` and has not been merged. Pull request https://github.com/JoshkieChan/Apex-AI/pull/2 remains open from `m6-multimodal` into `master` and has not been merged. Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 remains open from `master` into `main` and has not been merged.
+
+## M8 release candidate
+
+M8 prepares Apex AI `1.0.0rc1` on branch `m8-release`, stacked on the M7 head. It is a separate pull request into `m7-connectors` and is not merged. It does not publish a GitHub release and it does not deploy to production. The release decision stays with the operator.
+
+Schema revision `0009_controls` adds `runtime_controls`. A missing row means new execution is open. An operator with `operations.suspend` sets the hold through `POST /v1/operations/execution`. That permission is not delegable and cannot be registered as an MCP tool. `ExecutionEngine` recognizes a completed, uncertain, or still-running attempt before it consults the hold. The hold then refuses a new attempt, so it does not consume an approval or insert an execution row. The task fails with `execution_suspended`. Lifting the hold does not resume that task. `/health` reports `execution_suspended`. Production `/ready` requires Alembic `0009_controls`. Responses send `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and `Cache-Control: no-store`.
+
+Operator backup steps are in `docs/operations/backup.md`. Failure procedures are in `docs/operations/runbooks.md`. The evaluation method is in `docs/engineering/evaluation.md`. The capability matrix is in `docs/release/v1.0.md`. Decision `0017` records the hold. The supported deployment remains one API process and one worker. There is no measured production SLA, no application rate limit, and no claim of exactly-once external delivery. Connection gates and the reference stores stay process-local. The worker still loads only built-in capabilities. A disposable dump does not erase WAL, provider logs, or media files on an API host.
+
+Local verification ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for pytest was Compose service `docker-postgres-1`. That run left the database at `0009_controls`.
+
+- `ruff check .` — all checks passed
+- `ruff format --check .` — 204 files already formatted
+- `mypy` — no issues in 115 source files
+- `pytest` with `APEX_POSTGRES_TEST_URL` set — 184 passed, 1 skipped, 0 failed
+
+The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that image has no Docker CLI. `python -m tests.integration.deployment_probe` then ran with Docker Compose 2.26.1-4 and the host daemon. It printed `deployment-ok` and exited 0. The probe used project `apex-m52` and volumes `apex_m52_disposable` and `apex_m52_keys`. It included the schema round trip to `0009_controls`, a goal completed without `/run`, API and worker restarts, approval preservation, database outage, the production image, and a graceful worker stop. `python -m tests.integration.backup_restore` printed `backup-restore-ok` and exited 0. It used container `apex-m8-backup`, host port `127.0.0.1:55434`, and volume `apex_m8_backup`. A fresh database was upgraded to `0009_controls`, dumped in custom format, dropped, and restored. The restored control row and Alembic revision matched the dump. Cleanup removed only that container and volume. After both probes, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0009_controls`.
+
+No frontend files changed, so the web client was not rebuilt for this change. Live OpenAI, Anthropic, Vault, OIDC, and third-party accounts were not called.
+
+The implementation commit and the GitHub Actions runs for this branch are recorded after the push.
 
 ## Deferred
 
@@ -235,4 +257,4 @@ GitHub Actions was not run for that 2026-11-08 verification. Later sections reco
 
 ## Not production-ready
 
-Development token minting, the in-process fixture, a pinned PEM instead of JWKS, and a local Postgres password in Compose are for development. Do not put this service on an untrusted network. An empty production auth configuration stays alive and reports not ready.
+This note is the development-configuration boundary. Release readiness for `1.0.0rc1` is in the M8 section above. Development token minting, the in-process fixture, a pinned PEM instead of JWKS, and a local Postgres password in the development Compose file are for development. Do not put that configuration on an untrusted network. The production image refuses development signing. An empty production auth configuration stays alive and reports not ready.

@@ -1022,3 +1022,14 @@ class DeviceRecord(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime())
     updated_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
+class RuntimeControl(Base):
+    """One operator switch. A missing row means the switch is off."""
+
+    __tablename__ = "runtime_controls"
+
+    control_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    updated_by: Mapped[str] = mapped_column(String(64))

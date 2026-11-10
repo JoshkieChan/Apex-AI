@@ -22,7 +22,7 @@ These are the long-term objectives. A row is not a claim that the capability is 
 | Memory | Own scoped, versioned, governed memory | `apex.memory` is separate from conversation turns. Interaction does not write model text into trusted memory |
 | Identity | Own principals and authentication | A validated RS256 bearer token maps to a principal. Body fields, headers, and query parameters are not authentication |
 | Authority | Own permissions, delegation, and approval | Default deny. A plan, a role, and a model response are not grants. The caller cannot approve their own operation |
-| Execution | Control tools and external systems | `apex.execution` is the only place an adapter runs. It re-checks the registry, schema, and authority |
+| Execution | Control tools and external systems | `apex.execution` is the only place an adapter runs. It re-checks the registry, schema, and authority. An operator hold stops a new attempt before dispatch and leaves an uncertain row uncertain |
 | Infrastructure | Support operator-controlled deployment | One API process, one worker, and PostgreSQL. Compose is a local scaffold. Kubernetes is not part of this system |
 | Governance | Own evaluation, verification, audit, and policy | Deterministic checks decide verification. Model notes are advisory. Interaction logs record ids, modality, size, latency, and outcome |
 | Economic | See and later control cost | Token counts are stored when the provider sends them. This repository does not invent a price |

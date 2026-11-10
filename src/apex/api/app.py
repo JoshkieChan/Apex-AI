@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -10,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.engine import Engine
+from starlette.responses import Response
 
 from apex import __version__
 from apex.api.errors import ApiError
@@ -19,6 +21,7 @@ from apex.api.routes.goals import router as goals_router
 from apex.api.routes.health import router as health_router
 from apex.api.routes.interactions import router as interactions_router
 from apex.api.routes.memory import router as memory_router
+from apex.api.routes.operations import router as operations_router
 from apex.api.routes.reconciliation import router as reconciliation_router
 from apex.api.routes.tasks import router as tasks_router
 from apex.capabilities.builtins import build_default_registry
@@ -74,6 +77,19 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(goals_router)
     app.include_router(interactions_router)
     app.include_router(connections_router)
+    app.include_router(operations_router)
+
+    @app.middleware("http")
+    async def add_security_headers(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
