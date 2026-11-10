@@ -65,7 +65,9 @@ The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_
 
 The web client tests, type check, and production build passed: vitest 3 passed, `tsc --noEmit` passed, and Vite built the bundle. Browser recording was not executed. Live OpenAI, Anthropic, Vault, and OIDC were not called.
 
-The commit SHA and GitHub Actions run ids for this branch are recorded after the push.
+The implementation commit is `c0bcefdde6e61c799a32bf96a41975aefef6c4f9` on `m6-multimodal`. That commit was pushed to `origin/m6-multimodal`. GitHub Actions run `42731104222` (push) and run `42731180351` (pull request) both completed with success for that commit. Quality, deployment, and frontend succeeded in each run. Those runs are https://github.com/JoshkieChan/Apex-AI/actions/runs/42731104222 and https://github.com/JoshkieChan/Apex-AI/actions/runs/42731180351.
+
+Pull request https://github.com/JoshkieChan/Apex-AI/pull/2 is open from `m6-multimodal` into `master` and has not been merged. Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 remains open from `master` into `main` and has not been merged.
 
 ## Deferred
 
