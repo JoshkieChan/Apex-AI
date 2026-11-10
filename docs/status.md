@@ -85,7 +85,11 @@ Local verification ran in `python:3.12-slim` against a local copy of this tree. 
 
 The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that image has no Docker CLI. `python -m tests.integration.deployment_probe` then ran with Docker Compose 2.26.1 and the host daemon. It printed `deployment-ok` and exited 0. The probe used project `apex-m52` and volumes `apex_m52_disposable` and `apex_m52_keys`. It included the schema round trip to `0008_connectors`, a goal completed without `/run`, API and worker restarts, approval preservation, database outage, the production image, and a graceful worker stop. After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0008_connectors`.
 
-No connector management interface was added, so the web client was not rebuilt for this change. The commit SHA and GitHub Actions run ids for this branch are recorded after the push.
+No connector management interface was added, so the web client was not rebuilt for this change.
+
+The implementation commit is `c96afec0fb8371efcff2e9a943e47c01e1b1865f` on `m7-connectors`. That commit was pushed to `origin/m7-connectors`. GitHub Actions run `42735312091` (push) and run `42735376937` (pull request) both completed with success for that commit. Quality, deployment, and frontend succeeded in each run. Those runs are https://github.com/JoshkieChan/Apex-AI/actions/runs/42735312091 and https://github.com/JoshkieChan/Apex-AI/actions/runs/42735376937.
+
+Pull request https://github.com/JoshkieChan/Apex-AI/pull/3 is open from `m7-connectors` into `m6-multimodal` and has not been merged. Pull request https://github.com/JoshkieChan/Apex-AI/pull/2 remains open from `m6-multimodal` into `master` and has not been merged. Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 remains open from `master` into `main` and has not been merged.
 
 ## Deferred
 
