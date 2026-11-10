@@ -103,6 +103,21 @@ class Settings(BaseSettings):
     max_goal_recoveries: int = Field(default=3, ge=1, le=8)
     max_goals_per_recovery: int = Field(default=4, ge=1, le=16)
     auth_oidc_discovery: bool = False
+    media_dir: str = ""
+    media_max_bytes: int = Field(default=5_000_000, ge=1, le=20_000_000)
+    media_max_pixels: int = Field(default=16_000_000, ge=1, le=40_000_000)
+    media_max_edge: int = Field(default=8192, ge=1, le=16384)
+    media_max_audio_seconds: float = Field(default=120, ge=1, le=600)
+    media_ttl_seconds: int = Field(default=3600, ge=60, le=86_400)
+    media_conversation_retention: bool = False
+    media_max_images: int = Field(default=4, ge=1, le=8)
+    cors_origins: str = ""
+    openai_image_understanding: bool = False
+    openai_transcription: bool = False
+    openai_transcription_model: str = ""
+    openai_speech: bool = False
+    openai_speech_model: str = ""
+    anthropic_image_understanding: bool = False
 
 
 def load_settings() -> Settings:
@@ -156,6 +171,10 @@ def assert_runtime_is_allowed(settings: Settings) -> None:
         settings.auth_oidc_discovery and settings.auth_issuer.startswith("http://")
     ):
         raise RuntimeError("Production OIDC discovery must use HTTPS.")
+    if settings.environment == "production" and any(
+        origin.strip() == "*" for origin in settings.cors_origins.split(",")
+    ):
+        raise RuntimeError("Production CORS cannot allow every origin.")
     if settings.environment == "production" and settings.require_external_secrets:
         if settings.secret_provider == "env":  # noqa: S105
             raise RuntimeError(
