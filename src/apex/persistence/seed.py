@@ -38,6 +38,7 @@ DEV_PRINCIPALS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("memory.read", "allow"),
             ("memory.manage", "allow"),
             ("memory.verify", "allow"),
+            ("operations.suspend", "allow"),
         ),
     ),
     ("dev-registrar", "Development Registrar", (("capability.register", "allow"),)),

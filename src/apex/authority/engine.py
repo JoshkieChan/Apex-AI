@@ -17,6 +17,7 @@ CONTROL_PERMISSIONS = frozenset(
         "authority.grant",
         "capability.register",
         "operations.reconcile",
+        "operations.suspend",
         "memory.manage",
         "memory.verify",
     }
