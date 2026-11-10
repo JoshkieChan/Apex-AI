@@ -14,6 +14,7 @@ from sqlalchemy.engine import Engine
 from apex import __version__
 from apex.api.errors import ApiError
 from apex.api.routes.admin import router as admin_router
+from apex.api.routes.connections import router as connections_router
 from apex.api.routes.goals import router as goals_router
 from apex.api.routes.health import router as health_router
 from apex.api.routes.interactions import router as interactions_router
@@ -23,6 +24,7 @@ from apex.api.routes.tasks import router as tasks_router
 from apex.capabilities.builtins import build_default_registry
 from apex.clock import SystemClock
 from apex.config import Settings, assert_runtime_is_allowed, load_settings
+from apex.connectors.checks import install_connector_checks
 from apex.identity.tokens import TokenAuthenticator
 from apex.logging_config import configure_logging, get_logger
 from apex.mcp.checks import install_mcp_checks
@@ -46,6 +48,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
             seed_development_data(session, issuer=resolved.auth_issuer)
             session.commit()
     install_mcp_checks()
+    install_connector_checks()
     app = FastAPI(title="Apex AI", version=__version__)
     app.state.settings = resolved
     app.state.engine = database
@@ -70,6 +73,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.include_router(memory_router)
     app.include_router(goals_router)
     app.include_router(interactions_router)
+    app.include_router(connections_router)
 
     @app.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError) -> JSONResponse:

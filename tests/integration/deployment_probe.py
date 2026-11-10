@@ -400,7 +400,7 @@ def _round_trip_schema() -> None:
         timeout=180,
     )
     version = _scalar("SELECT version_num FROM alembic_version")
-    if version != "0007_interaction":
+    if version != "0008_connectors":
         raise SystemExit(f"schema revision {version}")
     _run(COMPOSE + ["up", "-d", "api", "worker"], timeout=180)
     _wait_ready()

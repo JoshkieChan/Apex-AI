@@ -26,7 +26,7 @@ BUILT_IN: tuple[tuple[str, str, str, str, tuple[str, ...], str], ...] = (
         "researcher",
         "Researcher",
         "Read authorized information and return structured findings.",
-        ("text.analyze", "records.lookup"),
+        ("text.analyze", "records.lookup", "reference.lookup", "device.read"),
         "supervised",
     ),
     (
@@ -34,7 +34,16 @@ BUILT_IN: tuple[tuple[str, str, str, str, tuple[str, ...], str], ...] = (
         "executor",
         "Executor",
         "Run an authorized capability through the execution engine.",
-        ("text.analyze", "records.lookup", "records.update", "records.export"),
+        (
+            "text.analyze",
+            "records.lookup",
+            "records.update",
+            "records.export",
+            "reference.lookup",
+            "reference.note",
+            "device.read",
+            "device.configure",
+        ),
         "bounded",
     ),
     (

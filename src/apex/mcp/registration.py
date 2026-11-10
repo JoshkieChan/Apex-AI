@@ -304,7 +304,7 @@ class McpRegistrationService:
             risk=RiskLevel(risk),
             input_model=model_in,
             output_model=model_out,
-            adapter=_adapter(server, tool.tool_name, self._settings),
+            adapter=_adapter(server, tool.tool_name, self._settings, permission_key),
             verification_kind=verification_kind,
             timeout_seconds=2.0,
             max_attempts=attempts,
@@ -354,12 +354,19 @@ def _adapter(
     server: McpServerRecord,
     tool_name: str,
     settings: Settings | None,
+    permission_key: str,
 ) -> Callable[[Mapping[str, object], float], dict[str, object]]:
     transport = server.transport
     endpoint = server.endpoint or ""
     credential_ref = server.credential_ref
+    server_id = server.id
 
     def run(payload: Mapping[str, object], timeout_seconds: float) -> dict[str, object]:
+        from datetime import UTC, datetime
+
+        from apex.connectors.gates import enforce
+
+        enforce(server_id, permission_key, None, datetime.now(UTC))
         arguments = {str(key): value for key, value in payload.items()}
         if transport == "inprocess":
             return cast(
