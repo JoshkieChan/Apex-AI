@@ -15,6 +15,7 @@ from pathlib import Path
 import psycopg
 from alembic import command
 from alembic.config import Config
+from sqlalchemy.exc import OperationalError
 
 ROOT = Path(__file__).resolve().parents[2]
 HOST = os.environ.get("APEX_DEPLOY_HOST", "127.0.0.1")
@@ -54,9 +55,9 @@ def main() -> None:
                 "postgres:16-alpine",
             ]
         )
-        _wait_ready()
         os.environ["APEX_DATABASE_URL"] = URL
-        command.upgrade(Config(str(ROOT / "alembic.ini")), "head")
+        _wait_ready()
+        _upgrade()
         _mark()
         dump = "/var/lib/postgresql/data/apex.dump"
         _exec(["pg_dump", "-U", "apex", "-d", "apex", "-Fc", "-f", dump])
@@ -124,17 +125,31 @@ def _check() -> None:
         raise SystemExit("restored schema revision does not match")
 
 
+def _upgrade() -> None:
+    last = "migration did not connect"
+    for _ in range(5):
+        try:
+            command.upgrade(Config(str(ROOT / "alembic.ini")), "head")
+        except OperationalError as exc:
+            last = str(exc).replace(PASSWORD, "[redacted]")
+            time.sleep(1)
+            continue
+        return
+    raise SystemExit(last[-2000:])
+
+
 def _wait_ready() -> None:
+    last = "backup database did not become ready"
     for _ in range(40):
-        completed = subprocess.run(
-            ["docker", "exec", NAME, "pg_isready", "-U", "apex", "-d", "apex"],
-            capture_output=True,
-            check=False,
-        )
-        if completed.returncode == 0:
-            return
-        time.sleep(1)
-    raise SystemExit("backup database did not become ready")
+        try:
+            with psycopg.connect(PSYCOPG_URL, connect_timeout=2) as connection:
+                connection.execute("SELECT 1")
+        except psycopg.Error as exc:
+            last = str(exc).replace(PASSWORD, "[redacted]")
+            time.sleep(1)
+            continue
+        return
+    raise SystemExit(last[-500:])
 
 
 def _exec(args: list[str]) -> None:
