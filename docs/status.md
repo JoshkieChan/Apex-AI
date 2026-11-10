@@ -111,7 +111,9 @@ The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_
 
 No frontend files changed, so the web client was not rebuilt for this change. Live OpenAI, Anthropic, Vault, OIDC, and third-party accounts were not called.
 
-The implementation commit and the GitHub Actions runs for this branch are recorded after the push.
+The release-candidate commit is `d6e83f3ed2c04a13fc8083d4c514fbfd61697ac9`. The backup probe then waits until PostgreSQL accepts a query, because `pg_isready` returned while the server was still restarting. That fix is `34675b680bb696b51afc946df94b00ab353e571a`. The local probe printed `backup-restore-ok` again after the fix. GitHub Actions run `42738674440` (push) and run `42738680081` (pull request) both completed with success for `34675b6`. Quality, deployment, and frontend succeeded in each run, and both deployment jobs passed backup restore. Those runs are https://github.com/JoshkieChan/Apex-AI/actions/runs/42738674440 and https://github.com/JoshkieChan/Apex-AI/actions/runs/42738680081.
+
+Pull request https://github.com/JoshkieChan/Apex-AI/pull/4 is open from `m8-release` into `m7-connectors` and has not been merged. Pull requests https://github.com/JoshkieChan/Apex-AI/pull/3, https://github.com/JoshkieChan/Apex-AI/pull/2, and https://github.com/JoshkieChan/Apex-AI/pull/1 remain open and have not been merged. No GitHub release was published.
 
 ## Deferred
 
