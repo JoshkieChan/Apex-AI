@@ -133,18 +133,15 @@ def _with_dispatch(exc: DomainError, dispatch: _ToolDispatch) -> DomainError:
 def _transport_error(exc: Exception, *, sent: bool) -> DomainError:
     """Classify a transport failure by whether the tool request was sent.
 
-    Connection and pool failures before tools/call are definitive. A read,
-    write, or protocol failure after that request was handed to the network
-    is ambiguous: the server may already have applied it. httpx retries are
+    Connection, pool, and TLS failures before tools/call are definitive.
+    After that request was handed to the network, every failure stays
+    ambiguous, including a connection reset while reading the response or
+    closing the session. The diagnostic code is kept. httpx retries are
     disabled on the pinned transport, and this function does not call again.
     """
-    pre_dispatch = isinstance(exc, (httpx2.ConnectTimeout, httpx2.ConnectError, httpx2.PoolTimeout))
-    if sent and not pre_dispatch:
-        code = (
-            "endpoint_timeout"
-            if isinstance(exc, httpx2.TimeoutException)
-            else "capability_unavailable"
-        )
+    timed_out = isinstance(exc, httpx2.TimeoutException)
+    code = "endpoint_timeout" if timed_out else "capability_unavailable"
+    if sent:
         return DomainError(
             code,
             "The remote tool request was sent and the outcome was not confirmed.",

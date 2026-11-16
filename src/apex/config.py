@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from apex.persistence.dsn import assemble_database_url
 
 
 class Settings(BaseSettings):
@@ -25,6 +27,25 @@ class Settings(BaseSettings):
 
     environment: Literal["development", "test", "production"] = "development"
     database_url: str = "sqlite+pysqlite:///:memory:"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _use_discrete_database_settings(cls, data: Any) -> Any:
+        """Prefer host and password parts over a hand-built URL.
+
+        An explicit database_url argument still wins, so tests can point at a
+        disposable database. The password is encoded inside the URL and is not
+        stored on another field.
+        """
+        if not isinstance(data, dict) or data.get("database_url"):
+            return data
+        assembled = assemble_database_url()
+        if assembled is None:
+            return data
+        copied = dict(data)
+        copied["database_url"] = assembled
+        return copied
+
     dev_auth_enabled: bool = False
     seed_dev_principals: bool = False
     log_level: str = "INFO"

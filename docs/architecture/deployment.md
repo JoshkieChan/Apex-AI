@@ -15,7 +15,7 @@ Apex runs as one image and two long-lived processes. They share PostgreSQL, the 
 
 `infrastructure/docker/compose.deploy.yml` is the local production-mode scaffold. Volume `apex_deploy_pg_data`. It does not publish PostgreSQL or the worker, and it binds the API to `127.0.0.1:8000`. It does not attach the development volume. It is not an internet-reachable deployment. Exposing the API beyond loopback requires TLS and a reverse proxy that this file does not provide. Authentication stays fail-closed until identity is configured outside Compose.
 
-`APEX_POSTGRES_PASSWORD` is required. Compose stops if it is unset. There is no default password. The same value is interpolated into `APEX_DATABASE_URL` for the migrate, API, and worker services. The application secret provider is unchanged: it resolves `env:`, `file:`, and `vault:` references and does not supply the database password.
+`APEX_POSTGRES_PASSWORD` is required. Compose stops if it is unset. There is no default password. Migrate, API, and worker receive the host, port, user, database, and password as separate variables. The process percent-encodes the password when it builds the driver URL, so reserved characters such as `@`, `:`, `/`, `%`, `?`, `#`, `&`, and `+` stay inside the password. Compose quotes the password so YAML does not treat `#` as a comment. The application secret provider is unchanged: it resolves `env:`, `file:`, and `vault:` references and does not supply the database password.
 
 ```bash
 # PowerShell

@@ -96,6 +96,21 @@ The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_
 
 The closure commit is `1eda94877f95e51596460e8702e827f7cf979383` on `master`. GitHub Actions run `42724225582` (push) and run `42724231569` (pull request) both completed with success for that commit. Quality and deployment succeeded in each run. Those runs are https://github.com/JoshkieChan/Apex-AI/actions/runs/42724225582 and https://github.com/JoshkieChan/Apex-AI/actions/runs/42724231569.
 
+## Dispatch certainty and database credentials
+
+A connection reset, pool timeout, or session-close failure after `tools/call` has been handed to the network stays `possibly_sent`. The diagnostic code remains `capability_unavailable` or `endpoint_timeout`. The same failure before that handoff stays `not_sent`. An idempotent read is still a definitive failure. `/run`, replan, and worker recovery do not send the write again. This is not exactly-once delivery to an arbitrary remote system.
+
+API, worker, and migration processes build the database URL from `APEX_POSTGRES_HOST`, port, user, database, and password. The password is percent-encoded and is not logged. A host without a password fails closed. A password without a host is not a connection, so a Compose client can export the password for interpolation. An explicit `APEX_DATABASE_URL` is used when the host is absent. The production image still starts without database settings and reports `/ready` 503.
+
+Local verification ran in `python:3.12-slim` against a copy of this tree. Pytest used a disposable database, `apex_m52_suite`, on the existing PostgreSQL 16 server. It did not migrate or downgrade the `apex` database.
+
+- `ruff check .` — all checks passed
+- `ruff format --check .` — passed
+- `mypy` — no issues in 99 source files
+- `pytest` with `APEX_POSTGRES_TEST_URL` pointed at `apex_m52_suite` — exited 0, with `test_rendered_deploy_compose_requires_a_password_and_binds_loopback` skipped because that image has no Docker CLI
+
+`python -m tests.integration.deployment_probe` printed `deployment-ok` and exited 0. The disposable password contained `@ : / % ? # & +`. Fresh migrations, API startup, worker startup, and database connectivity used the encoded password. The production worker received the password as its own environment variable, not inside a URL. The log scan passed. After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` remained `0009_controls` from later milestone work on that same server. This branch's schema is still `0006_reliability`. Live Vault, live OIDC, and a paid MCP server were not called. GitHub Actions for this change is recorded after the push.
+
 ## Verification recorded for the M5.2 remediation
 
 The remediation commit is `0a0b5d9b7350fa4856854448ea1659835e04ade1` on branch `master`. GitHub Actions run `42683559257` completed with success for that commit. Both the quality job and the deployment job succeeded. That run is https://github.com/JoshkieChan/Apex-AI/actions/runs/42683559257.
