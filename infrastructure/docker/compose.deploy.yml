@@ -23,7 +23,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: apex
-      POSTGRES_PASSWORD: ${APEX_POSTGRES_PASSWORD:?APEX_POSTGRES_PASSWORD is required}
+      POSTGRES_PASSWORD: "${APEX_POSTGRES_PASSWORD:?APEX_POSTGRES_PASSWORD is required}"
       POSTGRES_DB: apex
     volumes:
       - apex_deploy_pg_data:/var/lib/postgresql/data
@@ -41,7 +41,11 @@ services:
       dockerfile: infrastructure/docker/Dockerfile
     command: ["alembic", "upgrade", "head"]
     environment:
-      APEX_DATABASE_URL: postgresql+psycopg://apex:${APEX_POSTGRES_PASSWORD}@postgres:5432/apex
+      APEX_POSTGRES_HOST: postgres
+      APEX_POSTGRES_PORT: "5432"
+      APEX_POSTGRES_USER: apex
+      APEX_POSTGRES_DB: apex
+      APEX_POSTGRES_PASSWORD: "${APEX_POSTGRES_PASSWORD:?APEX_POSTGRES_PASSWORD is required}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,7 +58,11 @@ services:
       APEX_DEV_AUTH_ENABLED: "false"
       APEX_SEED_DEV_PRINCIPALS: "false"
       APEX_DEFER_GOAL_EXECUTION: "true"
-      APEX_DATABASE_URL: postgresql+psycopg://apex:${APEX_POSTGRES_PASSWORD}@postgres:5432/apex
+      APEX_POSTGRES_HOST: postgres
+      APEX_POSTGRES_PORT: "5432"
+      APEX_POSTGRES_USER: apex
+      APEX_POSTGRES_DB: apex
+      APEX_POSTGRES_PASSWORD: "${APEX_POSTGRES_PASSWORD:?APEX_POSTGRES_PASSWORD is required}"
       APEX_MODEL_PROVIDER: mock
       APEX_INSTANCE_ID: api
       APEX_SECRET_PROVIDER: env
@@ -88,7 +96,11 @@ services:
       APEX_DEV_AUTH_ENABLED: "false"
       APEX_SEED_DEV_PRINCIPALS: "false"
       APEX_DEFER_GOAL_EXECUTION: "true"
-      APEX_DATABASE_URL: postgresql+psycopg://apex:${APEX_POSTGRES_PASSWORD}@postgres:5432/apex
+      APEX_POSTGRES_HOST: postgres
+      APEX_POSTGRES_PORT: "5432"
+      APEX_POSTGRES_USER: apex
+      APEX_POSTGRES_DB: apex
+      APEX_POSTGRES_PASSWORD: "${APEX_POSTGRES_PASSWORD:?APEX_POSTGRES_PASSWORD is required}"
       APEX_MODEL_PROVIDER: mock
       APEX_INSTANCE_ID: worker
       APEX_WORKER_HEALTH_PORT: "8001"
