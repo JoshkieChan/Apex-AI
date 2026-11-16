@@ -280,6 +280,182 @@ def test_mcp_connection_uses_the_existing_fixture(client: TestClient) -> None:
     assert completed.json()["result"]["steps"][0]["output"]["found"] is True
 
 
+def test_records_update_cannot_be_downgraded_or_remapped(client: TestClient) -> None:
+    created = client.post(
+        "/v1/connections",
+        headers=auth("dev-registrar"),
+        json={
+            "connection_key": "fixture-risk",
+            "kind": "mcp",
+            "display_name": "Fixture",
+            "server_key": "fixture",
+        },
+    )
+    assert created.status_code == 200, created.text
+    connection_id = created.json()["id"]
+    _authorize(client, connection_id, ["records.lookup", "records.update"])
+    discovered = client.post(
+        f"/v1/connections/{connection_id}/discover",
+        headers=auth("dev-registrar"),
+    )
+    assert discovered.status_code == 200, discovered.text
+    update = next(
+        item
+        for item in discovered.json()["operations"]
+        if item["operation_key"] == "records_update"
+    )
+    downgraded = client.post(
+        f"/v1/connections/{connection_id}/operations/{update['id']}/accept",
+        headers=auth("dev-registrar"),
+        json={"risk": "low", "permission_key": "records.lookup"},
+    )
+    assert downgraded.status_code == 400
+    assert downgraded.json()["error"] == "invalid_registration"
+    from apex.connectors.catalog import mcp_policy
+
+    try:
+        mcp_policy("not_a_tool")
+    except DomainError as exc:
+        assert exc.code == "unsupported_operation"
+    else:
+        raise AssertionError("unknown tool was accepted")
+
+
+def test_two_owners_do_not_share_a_server(client: TestClient, session: Session) -> None:
+    from apex.mcp.registration import McpRegistrationService
+
+    now = datetime.now(UTC)
+    registry = client.app.state.registry
+    service = McpRegistrationService(session, registry, client.app.state.settings)
+    first = service.add_server(
+        owner_id=_principal(session, "dev-user").id,
+        server_key="fixture",
+        display_name="User fixture",
+        now=now,
+    )
+    second = service.add_server(
+        owner_id=_principal(session, "dev-approver").id,
+        server_key="fixture",
+        display_name="Approver fixture",
+        now=now,
+    )
+    assert first.id != second.id
+    assert first.owner_principal_id != second.owner_principal_id
+    first.trust_status = "revoked"
+    session.flush()
+    assert second.trust_status != "revoked"
+
+
+def test_health_does_not_reactivate_a_disconnected_connection(client: TestClient) -> None:
+    connection_id, pairing_code, device_id = _register(client, _device_body())
+    assert pairing_code is not None and device_id is not None
+    paired = client.post(
+        f"/v1/devices/{device_id}/pair",
+        headers=auth("dev-registrar"),
+        json={"pairing_code": pairing_code},
+    )
+    assert paired.status_code == 200
+    _authorize(client, connection_id, ["device.read"])
+    disconnected = client.post(
+        f"/v1/connections/{connection_id}/disconnect",
+        headers=auth("dev-registrar"),
+    )
+    assert disconnected.status_code == 200
+    assert disconnected.json()["state"] == "degraded"
+    refreshed = client.post(
+        f"/v1/connections/{connection_id}/health",
+        headers=auth("dev-registrar"),
+    )
+    assert refreshed.status_code == 200
+    assert refreshed.json()["state"] == "degraded"
+
+
+def test_lost_pairing_code_can_be_rotated_once(client: TestClient, session: Session) -> None:
+    connection_id, pairing_code, device_id = _register(client, _device_body())
+    assert pairing_code is not None and device_id is not None
+    duplicate = client.post("/v1/connections", headers=auth("dev-registrar"), json=_device_body())
+    assert duplicate.status_code == 200
+    assert duplicate.json().get("pairing_code") is None
+    rotated = client.post(
+        f"/v1/devices/{device_id}/pairing-code",
+        headers=auth("dev-registrar"),
+    )
+    assert rotated.status_code == 200, rotated.text
+    new_code = rotated.json()["pairing_code"]
+    assert new_code != pairing_code
+    stale = client.post(
+        f"/v1/devices/{device_id}/pair",
+        headers=auth("dev-registrar"),
+        json={"pairing_code": pairing_code},
+    )
+    assert stale.status_code == 403
+    paired = client.post(
+        f"/v1/devices/{device_id}/pair",
+        headers=auth("dev-registrar"),
+        json={"pairing_code": new_code},
+    )
+    assert paired.status_code == 200
+    assert paired.json()["pairing_state"] == "paired"
+    service = ConnectionService(session, client.app.state.registry, client.app.state.settings)
+    try:
+        service.rotate_pairing(
+            actor_id=_principal(session, "dev-user").id,
+            device_id=device_id,
+            now=datetime.now(UTC),
+        )
+    except DomainError as exc:
+        assert exc.code == "not_found"
+    else:
+        raise AssertionError("another principal rotated the pairing code")
+    assert (
+        "pairing_code"
+        not in client.get(f"/v1/connections/{connection_id}", headers=auth("dev-registrar")).json()
+    )
+
+
+def test_worker_registry_loads_and_drops_persisted_operations(
+    client: TestClient, session: Session
+) -> None:
+    from apex.capabilities.builtins import build_default_registry
+    from apex.connectors.hydration import hydrate_registry
+
+    api_id, _, _ = _register(client, _api_body(project_key="alpha"))
+    _authorize(client, api_id, ["reference.lookup"])
+    accepted = _accept(client, api_id, "lookup", "low", "reference.lookup")
+    registry = build_default_registry()
+    hydrate_registry(session, registry, client.app.state.settings)
+    loaded = registry.get(str(accepted["capability_id"]))
+    assert loaded is not None and loaded.available is True
+    assert loaded.permission_key == "reference.lookup"
+    revoked = client.post(
+        f"/v1/connections/{api_id}/revoke",
+        headers=auth("dev-registrar"),
+    )
+    assert revoked.status_code == 200
+    session.expire_all()
+    hydrate_registry(session, registry, client.app.state.settings)
+    disabled = registry.get(str(accepted["capability_id"]))
+    assert disabled is not None and disabled.available is False
+
+
+def test_owning_project_reaches_the_connection(client: TestClient, session: Session) -> None:
+    api_id, _, _ = _register(client, _api_body(project_key="alpha"))
+    _authorize(client, api_id, ["reference.lookup"])
+    _accept(client, api_id, "lookup", "low", "reference.lookup")
+    _grant(session, "dev-user", "reference.lookup", "allow")
+    seed_item("bolt", 1)
+    completed = client.post(
+        "/v1/tasks",
+        headers=auth(),
+        json={
+            "request": "Look up reference inventory item bolt",
+            "project_key": "alpha",
+        },
+    )
+    assert completed.status_code == 201, completed.text
+    assert completed.json()["status"] == "completed"
+
+
 def test_multi_system_goal_verifies_both_sides_and_does_not_replay(
     client: TestClient, session: Session
 ) -> None:

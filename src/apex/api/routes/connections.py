@@ -235,6 +235,28 @@ def pair_device(
     )
 
 
+@router.post("/devices/{device_id}/pairing-code")
+def rotate_pairing_code(
+    device_id: str,
+    principal: Principal = Depends(_principal),
+    session: Session = Depends(get_session),
+    clock: Clock = Depends(get_clock),
+    service: ConnectionService = Depends(_service),
+) -> dict[str, object]:
+    """Return a new pairing code once. The response is the only copy."""
+    _registrar(session, principal)
+
+    def _rotate() -> dict[str, object]:
+        view, code = service.rotate_pairing(
+            actor_id=principal.id, device_id=device_id, now=clock.now()
+        )
+        payload = view.model_dump(mode="json")
+        payload["pairing_code"] = code
+        return payload
+
+    return _commit(session, _rotate)
+
+
 @router.get("/devices/{device_id}")
 def read_device(
     device_id: str,

@@ -296,16 +296,8 @@ class ConnectionService:
         if connection.state in {"revoked", "disabled", "failed"}:
             return self._view(connection)
         device = self._device(connection)
-        if device is not None and device.health == "unavailable":
+        if device is not None and device.health == "unavailable" and connection.state == "active":
             connection.state = "degraded"
-        elif connection.scopes and (
-            connection.kind != "device" or (device is not None and device.pairing_state == "paired")
-        ):
-            connection.state = "active"
-            if device is not None:
-                device.health = "ok"
-                device.last_seen_at = now
-                device.updated_at = now
         connection.last_health_at = now
         connection.updated_at = now
         self._refresh_gate(connection)
@@ -339,6 +331,30 @@ class ConnectionService:
         self._log(connection, "paired")
         self._session.flush()
         return _device_view(device)
+
+    def rotate_pairing(
+        self, *, actor_id: str, device_id: str, now: datetime
+    ) -> tuple[DeviceView, str]:
+        """Issue a new pairing code once. The previous code stops working."""
+        device = self._session.get(DeviceRecord, device_id)
+        if device is None or device.owner_principal_id != actor_id:
+            raise DomainError("not_found", "The device is not available.")
+        if device.pairing_state == "revoked":
+            raise DomainError("connection_unavailable", "The device pairing was revoked.")
+        _limit_rotation(device_id, now)
+        code = token_hex(16)
+        device.pairing_code_hash = _hash_code(code)
+        device.pairing_state = "unpaired"
+        device.updated_at = now
+        connection = self._session.get(Connection, device.connection_id)
+        if connection is not None and connection.state not in {"revoked", "disabled"}:
+            connection.state = "pending_authorization"
+            connection.updated_at = now
+            self._refresh_gate(connection)
+        if connection is not None:
+            self._log(connection, "pairing_rotated")
+        self._session.flush()
+        return _device_view(device), code
 
     def get_connection(self, *, actor_id: str, connection_id: str) -> ConnectionView:
         """Return one connection owned by the actor."""
@@ -432,12 +448,20 @@ class ConnectionService:
                 "insufficient_scope",
                 "The connection scope does not include this operation.",
             )
+        from apex.connectors.catalog import mcp_policy
+
+        policy = mcp_policy(tool.tool_name)
+        if body.risk != policy.risk or body.permission_key != policy.permission_key:
+            raise DomainError(
+                "invalid_registration",
+                "Risk and permission are assigned by Apex.",
+            )
         registered = McpRegistrationService(self._session, self._registry, self._settings).register(
             actor_id=actor_id,
             tool_id=tool.id,
-            risk=body.risk,
-            permission_key=body.permission_key,
-            verification_kind=body.permission_key,
+            risk=policy.risk,
+            permission_key=policy.permission_key,
+            verification_kind=policy.verification_kind,
             now=now,
         )
         self._log(connection, "accepted")
@@ -504,6 +528,11 @@ class ConnectionService:
             row.updated_at = now
         return _operation_view(row)
 
+    def install_registered(self, connection: Connection, operation: ConnectionOperation) -> None:
+        """Install one persisted reference operation from the Apex catalog."""
+        catalog = self._catalog_item(connection.kind, operation.operation_key)
+        self._install(connection, operation, catalog, operation.version)
+
     def _install(
         self,
         connection: Connection,
@@ -526,6 +555,7 @@ class ConnectionService:
                 operation_key=operation.operation_key,
                 permission=catalog.permission_key,
                 device_key=None if device is None else device.device_key,
+                settings=self._settings,
             ),
             verification_kind=catalog.verification_kind,
             timeout_seconds=2.0,
@@ -678,6 +708,25 @@ def _digest(value: object) -> str:
 
 def _hash_code(code: str) -> str:
     return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
+_ROTATIONS: dict[str, list[datetime]] = {}
+
+
+def _limit_rotation(device_id: str, now: datetime) -> None:
+    """Allow a few rotations per minute. The code itself is not stored."""
+    from apex.clock import ensure_aware
+
+    moment = ensure_aware(now)
+    recent = [
+        item
+        for item in _ROTATIONS.get(device_id, [])
+        if (moment - ensure_aware(item)).total_seconds() < 60
+    ]
+    if len(recent) >= 5:
+        raise DomainError("rate_limited", "Pairing rotation is temporarily limited.")
+    recent.append(moment)
+    _ROTATIONS[device_id] = recent
 
 
 def _operation_view(operation: ConnectionOperation) -> OperationView:

@@ -263,6 +263,11 @@ def serve(
     engine = create_db_engine(settings.database_url)
     factory = create_session_factory(engine)
     registry = build_default_registry()
+    from apex.connectors.checks import install_connector_checks
+    from apex.mcp.checks import install_mcp_checks
+
+    install_mcp_checks()
+    install_connector_checks()
     provider = build_provider(settings)
 
     def _once() -> None:
@@ -281,6 +286,15 @@ def serve(
                 tasks_failed=report.tasks_failed,
                 tasks_uncertain=report.tasks_uncertain,
             )
+            return
+        try:
+            with factory() as session:
+                from apex.connectors.hydration import hydrate_registry
+
+                hydrate_registry(session, registry, settings)
+        except SQLAlchemyError:
+            logger.exception("worker could not load connector registrations")
+            status.mark_degraded(when=used.now())
             return
         if not probe_database(factory):
             status.mark_degraded(when=used.now())
@@ -369,11 +383,22 @@ def recover_once() -> RecoveryReport:
     assert_runtime_is_allowed(settings)
     configure_logging(settings)
     engine = create_db_engine(settings.database_url)
+    factory = create_session_factory(engine)
+    registry = build_default_registry()
+    from apex.connectors.checks import install_connector_checks
+    from apex.mcp.checks import install_mcp_checks
+
+    install_mcp_checks()
+    install_connector_checks()
     try:
+        with factory() as session:
+            from apex.connectors.hydration import hydrate_registry
+
+            hydrate_registry(session, registry, settings)
         return recover_available(
-            factory=create_session_factory(engine),
+            factory=factory,
             settings=settings,
-            registry=build_default_registry(),
+            registry=registry,
             provider=build_provider(settings),
             clock=SystemClock(),
         )

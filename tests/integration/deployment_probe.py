@@ -59,6 +59,7 @@ def main() -> None:
         _guard_config()
         _round_trip_schema()
         normal = _normal_goal()
+        _connector_worker()
         _restart_api(normal)
         _approval_stays_blocked()
         _terminal_goals_stay_put()
@@ -90,6 +91,131 @@ def _normal_goal() -> str:
         raise SystemExit("verification did not pass")
     print("scenario normal-execution", flush=True)
     return str(started["id"])
+
+
+def _connector_worker() -> None:
+    """Register reference connections through the API and execute them in the worker."""
+    api_id = _accept_connection(
+        {
+            "connection_key": "reference",
+            "kind": "api",
+            "display_name": "Reference inventory",
+            "endpoint": "apex-reference://inventory",
+        },
+        ["reference.lookup"],
+        ("lookup", "low", "reference.lookup"),
+    )
+    device_id, pairing_code, device = _register_device()
+    paired = _send(
+        "POST",
+        f"/v1/devices/{device}/pair",
+        {"pairing_code": pairing_code},
+        "dev-registrar",
+    )
+    if paired[0] != 200:
+        raise SystemExit(safe(f"device pair failed {paired[0]} {paired[1]}"))
+    _accept_connection(
+        None,
+        ["device.configure"],
+        ("configure", "medium", "device.configure"),
+        connection_id=device_id,
+    )
+    for permission in ("reference.lookup", "device.configure"):
+        _sql(
+            "INSERT INTO permission_grants "
+            "(id, principal_id, permission_key, effect, resource_scope, created_at) "
+            "SELECT gen_random_uuid()::text, id, %s, 'allow', '*', NOW() "
+            "FROM principals WHERE external_key = 'dev-user' "
+            "ON CONFLICT ON CONSTRAINT uq_permission_grants_principal_permission DO NOTHING",
+            (permission,),
+        )
+    _run(COMPOSE + ["restart", "worker"], timeout=120)
+    _wait_worker()
+    objective = "Coordinate reference systems: look up 'bolt' and label the reference device 'west'"
+    finished = _wait_goal(_submit(objective)["id"], "completed", timeout=60)
+    if finished.get("verifications") and finished["verifications"][0]["status"] != "passed":
+        raise SystemExit("connector verification did not pass")
+    _run(COMPOSE + ["restart", "worker"], timeout=120)
+    _wait_worker()
+    _wait_goal(_submit(objective)["id"], "completed", timeout=60)
+    _run(COMPOSE + ["stop", "worker"])
+    pending = _submit(objective)
+    if pending["status"] != "running":
+        raise SystemExit("revocation setup did not defer the connector goal")
+    for connection_id in (api_id, device_id):
+        status, revoked = _send(
+            "POST", f"/v1/connections/{connection_id}/revoke", None, "dev-registrar"
+        )
+        if status != 200 or revoked.get("state") != "revoked":
+            raise SystemExit(safe(f"connector revoke failed {status} {revoked}"))
+    _run(COMPOSE + ["start", "worker"])
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and _status(str(pending["id"])) == "running":
+        time.sleep(0.5)
+    if _status(str(pending["id"])) == "completed":
+        raise SystemExit("worker executed a revoked connector")
+    print("scenario connector-worker", flush=True)
+
+
+def _register_device() -> tuple[str, str, str]:
+    status, created = _send(
+        "POST",
+        "/v1/connections",
+        {
+            "connection_key": "reference-device",
+            "kind": "device",
+            "display_name": "Reference device",
+            "endpoint": "apex-device://reference",
+        },
+        "dev-registrar",
+    )
+    if status != 200:
+        raise SystemExit(safe(f"device registration failed {status} {created}"))
+    return str(created["id"]), str(created["pairing_code"]), str(created["device_id"])
+
+
+def _accept_connection(
+    body: dict[str, object] | None,
+    scopes: list[str],
+    operation: tuple[str, str, str],
+    connection_id: str | None = None,
+) -> str:
+    if body is not None:
+        status, created = _send("POST", "/v1/connections", body, "dev-registrar")
+        if status != 200:
+            raise SystemExit(safe(f"connector registration failed {status} {created}"))
+        connection_id = str(created["id"])
+    if connection_id is None:
+        raise SystemExit("connector registration did not return an id")
+    status, authorized = _send(
+        "POST",
+        f"/v1/connections/{connection_id}/authorize",
+        {"scopes": scopes},
+        "dev-registrar",
+    )
+    if status != 200:
+        raise SystemExit(safe(f"connector authorization failed {status} {authorized}"))
+    status, discovered = _send(
+        "POST", f"/v1/connections/{connection_id}/discover", None, "dev-registrar"
+    )
+    if status != 200:
+        raise SystemExit(safe(f"connector discovery failed {status} {discovered}"))
+    operations = discovered.get("operations")
+    if not isinstance(operations, list):
+        raise SystemExit("connector discovery returned no operations")
+    key, risk, permission = operation
+    selected = next(
+        item for item in operations if isinstance(item, dict) and item.get("operation_key") == key
+    )
+    status, accepted = _send(
+        "POST",
+        f"/v1/connections/{connection_id}/operations/{selected['id']}/accept",
+        {"risk": risk, "permission_key": permission},
+        "dev-registrar",
+    )
+    if status != 200 or accepted.get("available") is not True:
+        raise SystemExit(safe(f"connector accept failed {status} {accepted}"))
+    return connection_id
 
 
 def _restart_api(goal_id: str) -> None:
@@ -512,6 +638,8 @@ def _wait_goal(goal_id: str, expected: str, timeout: int = 40) -> dict[str, obje
         last = str(body.get("status") or status)
         if status == 200 and last == expected:
             return body
+        if status == 200 and last in {"failed", "partial", "uncertain", "cancelled"}:
+            raise SystemExit(safe(f"goal became {last}: {body}"))
         time.sleep(0.5)
     raise SystemExit(f"goal stayed {last}, expected {expected}")
 

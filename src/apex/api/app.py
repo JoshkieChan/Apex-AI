@@ -54,6 +54,16 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None) -
     app.state.engine = database
     app.state.session_factory = factory
     app.state.registry = build_default_registry()
+    if resolved.database_url:
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from apex.connectors.hydration import hydrate_registry
+
+        try:
+            with factory() as session:
+                hydrate_registry(session, app.state.registry, resolved)
+        except SQLAlchemyError:
+            get_logger("api").exception("connector registrations were not loaded")
     app.state.provider = build_provider(resolved)
     app.state.clock = SystemClock()
     app.state.authenticator = TokenAuthenticator(resolved)
