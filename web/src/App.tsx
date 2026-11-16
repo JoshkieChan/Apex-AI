@@ -1,6 +1,14 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
-import { interactionBody, readError, responseText, type InputPart } from "./api";
+import {
+  interactionBody,
+  keepConversation,
+  readError,
+  responseText,
+  turnsFromConversation,
+  type ConversationTurn,
+  type InputPart,
+} from "./api";
 import { recordingToWav } from "./wav";
 
 const apiBase = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
@@ -18,13 +26,74 @@ export function App() {
   const [speechError, setSpeechError] = useState("");
   const [audioUrl, setAudioUrl] = useState("");
   const [wantAudio, setWantAudio] = useState(false);
+  const [conversationId, setConversationId] = useState(
+    sessionStorage.getItem("apex-conversation") ?? "",
+  );
+  const [turns, setTurns] = useState<ConversationTurn[]>([]);
+  const [historyError, setHistoryError] = useState("");
   const recorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
+  const spokenUrl = useRef("");
+  const previewUrls = useRef<string[]>([]);
 
   function saveToken(value: string) {
     setToken(value);
     sessionStorage.setItem("apex-token", value);
   }
+
+  function rememberConversation(value: string) {
+    setConversationId(value);
+    if (value) {
+      sessionStorage.setItem("apex-conversation", value);
+    } else {
+      sessionStorage.removeItem("apex-conversation");
+    }
+  }
+
+  async function loadHistory(id: string) {
+    if (!id || !token) {
+      return;
+    }
+    setHistoryError("");
+    const response = await fetch(`${apiBase}/v1/conversations/${id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      setHistoryError(await readError(response));
+      return;
+    }
+    const payload = (await response.json()) as {
+      interactions?: Parameters<typeof turnsFromConversation>[0];
+    };
+    setTurns(turnsFromConversation(payload.interactions ?? []));
+  }
+
+  function startNewConversation() {
+    rememberConversation("");
+    setTurns([]);
+    setHistoryError("");
+    setError("");
+    setAnswer("");
+    setTranscript("");
+  }
+
+  useEffect(() => {
+    return () => {
+      if (spokenUrl.current) {
+        URL.revokeObjectURL(spokenUrl.current);
+      }
+      previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!conversationId || !token) {
+      return;
+    }
+    void loadHistory(conversationId).catch((caught: unknown) => {
+      setHistoryError(caught instanceof Error ? caught.message : "The conversation could not be read.");
+    });
+  }, [conversationId, token]);
 
   async function toggleRecording() {
     if (!navigator.mediaDevices || typeof MediaRecorder === "undefined") {
@@ -83,12 +152,22 @@ export function App() {
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(interactionBody({ parts, outputAudio: wantAudio })),
+        body: JSON.stringify(
+          interactionBody({
+            conversationId: conversationId || undefined,
+            parts,
+            outputAudio: wantAudio,
+          }),
+        ),
       });
       if (!response.ok) {
+        rememberConversation(keepConversation(conversationId, true));
         throw new Error(await readError(response));
       }
-      const parsed = responseText(await response.json());
+      const body = (await response.json()) as Parameters<typeof responseText>[0];
+      const parsed = responseText(body);
+      rememberConversation(body.conversation_id);
+      await loadHistory(body.conversation_id);
       setTranscript(parsed.transcript);
       setAnswer(parsed.answer);
       setSpeechError(parsed.speechError);
@@ -97,7 +176,11 @@ export function App() {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (spoken.ok) {
-          setAudioUrl(URL.createObjectURL(await spoken.blob()));
+          if (spokenUrl.current) {
+            URL.revokeObjectURL(spokenUrl.current);
+          }
+          spokenUrl.current = URL.createObjectURL(await spoken.blob());
+          setAudioUrl(spokenUrl.current);
         }
       }
     } catch (caught) {
@@ -152,12 +235,17 @@ export function App() {
             type="file"
             accept="image/png,image/jpeg,image/webp"
             multiple
-            onChange={(event) => setImages(Array.from(event.target.files ?? []))}
+            onChange={(event) => {
+              previewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+              const files = Array.from(event.target.files ?? []);
+              previewUrls.current = files.map((file) => URL.createObjectURL(file));
+              setImages(files);
+            }}
           />
         </label>
         <div className="previews">
-          {images.map((image) => (
-            <img key={`${image.name}-${image.size}`} alt="" src={URL.createObjectURL(image)} />
+          {previewUrls.current.map((url) => (
+            <img key={url} alt="" src={url} />
           ))}
         </div>
         <label>
@@ -181,11 +269,24 @@ export function App() {
             />
             Request spoken reply
           </label>
+          <button type="button" onClick={startNewConversation}>
+            New conversation
+          </button>
           <button type="submit" disabled={busy || token.length === 0}>
             {busy ? "Sending" : "Send"}
           </button>
         </div>
       </form>
+      {historyError ? <p className="error">{historyError}</p> : null}
+      {turns.length > 0 ? (
+        <ol>
+          {turns.map((turn, index) => (
+            <li key={`${turn.role}-${index}`}>
+              {turn.role === "user" ? "You" : "Apex"}: {turn.text}
+            </li>
+          ))}
+        </ol>
+      ) : null}
       {error ? <p className="error">{error}</p> : null}
       {transcript ? (
         <section>

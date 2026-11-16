@@ -27,7 +27,7 @@ COMPOSE = ["docker", "compose", "-p", "apex-m52", "-f", str(COMPOSE_FILE)]
 HOST = os.environ.get("APEX_DEPLOY_HOST", "127.0.0.1")
 API = f"http://{HOST}:18080"
 PROD = f"http://{HOST}:18082"
-PASSWORD = "acceptance-only-db-password"
+PASSWORD = "a@b:c/d%e?f#g&h+i"
 PRIVATE_KEY = ""
 SEQUENTIAL = (
     "Coordinate sequentially: count the words in 'alpha beta' then count the words in 'gamma'"
@@ -164,8 +164,10 @@ def _worker_restart_does_not_duplicate() -> None:
     )
     held = COMPOSE + ["-f", str(override)]
     rendered = _run(held + ["config"], timeout=60)
-    if "APEX_DATABASE_URL" not in rendered or "APEX_TEST_HOLD_AFTER_SUBTASK" not in rendered:
+    if "APEX_POSTGRES_HOST" not in rendered or "APEX_TEST_HOLD_AFTER_SUBTASK" not in rendered:
         raise SystemExit("compose did not keep the worker database settings")
+    if "postgresql+psycopg://" in rendered:
+        raise SystemExit("compose put the database password in a URL")
     _run(held + ["up", "-d", "--no-deps", "--force-recreate", "worker"], timeout=180)
     _wait_worker()
     started = _submit(SEQUENTIAL)
@@ -237,8 +239,14 @@ def _database_outage() -> None:
         raise SystemExit("memory delete failed")
     _sql("UPDATE memories SET deleted_at = NOW() - INTERVAL '48 hours' WHERE id = %s", (memory_id,))
     purged = _send("POST", "/v1/memory/purge", None, subject="dev-approver")
-    if purged[0] != 200 or int(purged[1].get("purged", 0)) < 1:
+    if purged[0] != 200:
         raise SystemExit(safe(f"purge failed {purged}"))
+    # The worker may purge the aged row before this request. Either actor is valid.
+    remaining = int(_scalar_params("SELECT COUNT(*) FROM memories WHERE id = %s", (memory_id,)))
+    if int(purged[1].get("purged", 0)) < 1 and remaining != 0:
+        raise SystemExit(safe(f"purge failed {purged}"))
+    if remaining != 0:
+        raise SystemExit("purge left the memory row")
     before = _scalar("SELECT COUNT(*) FROM executions")
     _run(COMPOSE + ["stop", "postgres"])
     _wait_worker_status(503)
@@ -309,9 +317,8 @@ def _production_image() -> None:
         raise SystemExit("production image accepted development authentication")
     if b"BEGIN" in refused.stdout or b"BEGIN" in refused.stderr:
         raise SystemExit("production refusal printed key material")
-    database_url = f"postgresql+psycopg://apex:{PASSWORD}@postgres:5432/apex"
     env = os.environ.copy()
-    env["APEX_DATABASE_URL"] = database_url
+    env["APEX_POSTGRES_PASSWORD"] = PASSWORD
     _run(
         [
             "docker",
@@ -326,7 +333,15 @@ def _production_image() -> None:
             "-e",
             "APEX_DEV_AUTH_ENABLED=false",
             "-e",
-            "APEX_DATABASE_URL",
+            "APEX_POSTGRES_HOST=postgres",
+            "-e",
+            "APEX_POSTGRES_PORT=5432",
+            "-e",
+            "APEX_POSTGRES_USER=apex",
+            "-e",
+            "APEX_POSTGRES_DB=apex",
+            "-e",
+            "APEX_POSTGRES_PASSWORD",
             "-e",
             "APEX_INSTANCE_ID=prod-worker",
             "-e",
@@ -621,13 +636,13 @@ def _json(raw: bytes) -> dict[str, object]:
 
 
 def _sql(statement: str, params: tuple[object, ...]) -> None:
-    with psycopg.connect(_dsn(), connect_timeout=5) as connection:
+    with _connect() as connection:
         connection.execute(statement, params)
         connection.commit()
 
 
 def _scalar(statement: str) -> object:
-    with psycopg.connect(_dsn(), connect_timeout=5) as connection:
+    with _connect() as connection:
         row = connection.execute(statement).fetchone()
     if row is None:
         raise SystemExit(statement)
@@ -635,7 +650,7 @@ def _scalar(statement: str) -> object:
 
 
 def _subtasks(goal_id: str) -> dict[str, str | None]:
-    with psycopg.connect(_dsn(), connect_timeout=5) as connection:
+    with _connect() as connection:
         rows = connection.execute(
             "SELECT subtask_key, execution_id FROM goal_subtasks WHERE goal_id = %s",
             (goal_id,),
@@ -648,7 +663,7 @@ def _execution_count(task_id: str) -> int:
 
 
 def _step_counts(task_id: str) -> list[object]:
-    with psycopg.connect(_dsn(), connect_timeout=5) as connection:
+    with _connect() as connection:
         return list(
             connection.execute(
                 "SELECT plan_step_id FROM executions WHERE task_id = %s "
@@ -659,15 +674,22 @@ def _step_counts(task_id: str) -> list[object]:
 
 
 def _scalar_params(statement: str, params: tuple[object, ...]) -> object:
-    with psycopg.connect(_dsn(), connect_timeout=5) as connection:
+    with _connect() as connection:
         row = connection.execute(statement, params).fetchone()
     if row is None:
         raise SystemExit(statement)
     return row[0]
 
 
-def _dsn() -> str:
-    return f"host={HOST} port=55433 dbname=apex user=apex password={PASSWORD}"
+def _connect() -> psycopg.Connection:
+    return psycopg.connect(
+        host=HOST,
+        port=55433,
+        dbname="apex",
+        user="apex",
+        password=PASSWORD,
+        connect_timeout=5,
+    )
 
 
 def _container_id(name: str) -> str:

@@ -22,7 +22,8 @@ def test_compose_files_do_not_embed_a_database_password() -> None:
         assert "POSTGRES_PASSWORD: apex" not in text
         assert "apex:apex@" not in text
         assert "${APEX_POSTGRES_PASSWORD:?APEX_POSTGRES_PASSWORD is required}" in text
-        assert "postgresql+psycopg://apex:${APEX_POSTGRES_PASSWORD}@postgres:5432/apex" in text
+        assert "APEX_POSTGRES_HOST: postgres" in text
+        assert "postgresql+psycopg://" not in text
     assert "127.0.0.1:8000:8000" in deploy
     assert "5433:5432" not in deploy
     assert "8001:8001" not in deploy
@@ -79,6 +80,7 @@ def test_rendered_deploy_compose_requires_a_password_and_binds_loopback(tmp_path
     assert "8001:8001" not in text
     assert "5433:5432" not in text
     assert "apex:apex@" not in text
+    assert "postgresql+psycopg://" not in text
     assert "POSTGRES_PASSWORD: compose-test-password" in text
     assert 'APEX_DEV_AUTH_ENABLED: "false"' in text or "APEX_DEV_AUTH_ENABLED: 'false'" in text
     assert "APEX_ENVIRONMENT: production" in text

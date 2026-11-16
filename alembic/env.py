@@ -11,6 +11,7 @@ from sqlalchemy import engine_from_config, event, pool
 
 from apex.persistence import models  # noqa: F401
 from apex.persistence.base import Base
+from apex.persistence.dsn import assemble_database_url
 
 config = context.config
 if config.config_file_name is not None:
@@ -20,6 +21,9 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
+    assembled = assemble_database_url()
+    if assembled is not None:
+        return assembled
     return os.environ.get("APEX_DATABASE_URL") or config.get_main_option("sqlalchemy.url") or ""
 
 
