@@ -59,6 +59,34 @@ export function responseText(response: InteractionResponse): {
   };
 }
 
+export interface ConversationTurn {
+  role: "user" | "assistant";
+  text: string;
+}
+
+export interface StoredInteraction {
+  request_text?: string | null;
+  parts?: InteractionPart[];
+}
+
+export function turnsFromConversation(interactions: StoredInteraction[]): ConversationTurn[] {
+  const turns: ConversationTurn[] = [];
+  for (const interaction of interactions) {
+    if (interaction.request_text) {
+      turns.push({ role: "user", text: interaction.request_text });
+    }
+    const answer = interaction.parts?.find((part) => part.kind === "text")?.text;
+    if (answer) {
+      turns.push({ role: "assistant", text: answer });
+    }
+  }
+  return turns;
+}
+
+export function keepConversation(current: string, failed: boolean): string {
+  return failed ? current : current;
+}
+
 export async function readError(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as { error?: string; message?: string };

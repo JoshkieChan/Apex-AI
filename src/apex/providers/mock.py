@@ -29,6 +29,7 @@ class MockModelProvider:
     ) -> None:
         self.scripts = scripts or {}
         self.fail = fail
+        self.fail_after_send = False
         self.fail_transcribe = False
         self.fail_speech = False
         self.model_name = model_name
@@ -46,6 +47,13 @@ class MockModelProvider:
     def respond(self, turn: ProviderTurn) -> ProviderText:
         """Echo normalized parts. The text is a fixture, not evidence of perception quality."""
         self.turns.append(turn)
+        if self.fail_after_send:
+            raise ProviderError(
+                "timeout",
+                "The mock provider lost the response.",
+                sent=True,
+                confirmed=False,
+            )
         if self.fail:
             raise ProviderError("unavailable", "The mock provider was configured to fail.")
         pieces = [f"turns:{len(turn.history)}"]

@@ -4,18 +4,24 @@ from __future__ import annotations
 
 import io
 import logging
+import threading
 import wave
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from tests.conftest import auth
+from tests.support_auth import AUDIENCE, ISSUER, PRIVATE_PEM, PUBLIC_PEM
 from tests.unit.test_media_formats import _jpeg, _png, _webp
 
 from apex.api.app import create_app
 from apex.config import Settings
 from apex.contracts.schemas import TokenUsage
+from apex.errors import DomainError
+from apex.memory.store import MemoryStore
+from apex.persistence.base import Base
 from apex.persistence.models import (
     Execution,
     InteractionRecord,
@@ -23,6 +29,7 @@ from apex.persistence.models import (
     MemoryRecord,
     PermissionGrant,
 )
+from apex.persistence.session import create_db_engine
 from apex.providers.mock import MockModelProvider
 from apex.providers.modalities import ProviderCapabilities, ProviderText, ProviderTurn
 
@@ -126,8 +133,8 @@ def test_failures_do_not_replay_or_drop_text(client: TestClient, tmp_path: Path)
         headers=auth(),
         json={"idempotency_key": "fail-once", "parts": [{"kind": "text", "text": "hello"}]},
     )
-    assert repeated.status_code == 502
-    assert len(provider.turns) == 1
+    assert repeated.status_code == 200, repeated.text
+    assert len(provider.turns) == 2
     provider.fail_speech = True
     spoken = client.post(
         "/v1/interactions",
@@ -268,6 +275,16 @@ def test_in_progress_reservation_is_not_retried(client: TestClient, session: Ses
     assert retry.status_code == 409
     assert retry.json()["error"] == "outcome_uncertain"
     assert len(provider.turns) == before
+    row.error_code = "reserved"
+    session.commit()
+    waiting = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={"idempotency_key": "reserved", "parts": [{"kind": "text", "text": "once"}]},
+    )
+    assert waiting.status_code == 409
+    assert waiting.json()["error"] == "in_progress"
+    assert len(provider.turns) == before
 
 
 def test_logs_and_disabled_modalities_do_not_leak_or_switch_providers(
@@ -342,6 +359,173 @@ class _Narrow:
     def complete_structured(self, request: object) -> object:
         del request
         raise AssertionError("structured completion was not requested")
+
+
+def test_memory_failure_before_dispatch_can_be_retried(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider: MockModelProvider = client.app.state.provider
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise DomainError("invalid_request", "The context could not be assembled.")
+
+    monkeypatch.setattr(MemoryStore, "assemble", broken)
+    failed = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={
+            "idempotency_key": "context",
+            "project_key": "lab",
+            "parts": [{"kind": "text", "text": "hello"}],
+        },
+    )
+    assert failed.status_code == 400
+    assert failed.json()["error"] == "invalid_request"
+    assert provider.turns == []
+    monkeypatch.undo()
+    retried = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={
+            "idempotency_key": "context",
+            "project_key": "lab",
+            "parts": [{"kind": "text", "text": "hello"}],
+        },
+    )
+    assert retried.status_code == 200, retried.text
+    assert len(provider.turns) == 1
+
+
+def test_sent_provider_failure_is_not_replayed(client: TestClient) -> None:
+    provider: MockModelProvider = client.app.state.provider
+    provider.fail_after_send = True
+    failed = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={"idempotency_key": "sent", "parts": [{"kind": "text", "text": "hello"}]},
+    )
+    assert failed.status_code == 409
+    assert failed.json()["error"] == "outcome_uncertain"
+    provider.fail_after_send = False
+    again = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={"idempotency_key": "sent", "parts": [{"kind": "text", "text": "hello"}]},
+    )
+    assert again.status_code == 409
+    assert len(provider.turns) == 1
+
+
+def test_same_key_with_a_different_payload_conflicts(client: TestClient) -> None:
+    first = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={"idempotency_key": "shared", "parts": [{"kind": "text", "text": "one"}]},
+    )
+    assert first.status_code == 200
+    second = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={"idempotency_key": "shared", "parts": [{"kind": "text", "text": "two"}]},
+    )
+    assert second.status_code == 409
+    assert second.json()["error"] == "idempotency_conflict"
+
+
+def test_concurrent_reservation_calls_the_provider_once(tmp_path: Path) -> None:
+    database = tmp_path / "race.db"
+    url = f"sqlite+pysqlite:///{database.as_posix()}"
+    engine = create_db_engine(url)
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        dev_auth_enabled=True,
+        auth_issuer=ISSUER,
+        auth_audience=AUDIENCE,
+        auth_public_key_pem=PUBLIC_PEM,
+        auth_private_key_pem=PRIVATE_PEM,
+        seed_dev_principals=True,
+        database_url=url,
+        model_provider="mock",
+        log_level="WARNING",
+    )
+    application = create_app(settings=settings, engine=engine)
+    client = TestClient(application)
+    client.__enter__()
+    provider: MockModelProvider = client.app.state.provider
+    started = threading.Event()
+    release = threading.Event()
+    original = provider.respond
+
+    def blocked(turn: ProviderTurn) -> ProviderText:
+        started.set()
+        assert release.wait(timeout=5)
+        return original(turn)
+
+    provider.respond = blocked  # type: ignore[method-assign]
+    outcomes: list[tuple[int, str]] = []
+
+    def post() -> None:
+        response = client.post(
+            "/v1/interactions",
+            headers=auth(),
+            json={"idempotency_key": "race", "parts": [{"kind": "text", "text": "once"}]},
+        )
+        outcomes.append((response.status_code, str(response.json().get("error", "ok"))))
+
+    first = threading.Thread(target=post)
+    second = threading.Thread(target=post)
+    first.start()
+    assert started.wait(timeout=5)
+    second.start()
+    second.join(timeout=5)
+    release.set()
+    first.join(timeout=5)
+    provider.respond = original  # type: ignore[method-assign]
+    assert sorted(outcomes) == [(200, "ok"), (409, "outcome_uncertain")]
+    assert len(provider.turns) == 1
+    replay = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={"idempotency_key": "race", "parts": [{"kind": "text", "text": "once"}]},
+    )
+    assert replay.status_code == 200
+    assert len(provider.turns) == 1
+    client.__exit__(None, None, None)
+    engine.dispose()
+
+
+def test_history_includes_both_speakers_and_stays_with_the_owner(client: TestClient) -> None:
+    first = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={"parts": [{"kind": "text", "text": "Where is the record?"}]},
+    )
+    assert first.status_code == 200, first.text
+    conversation_id = first.json()["conversation_id"]
+    second = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={
+            "conversation_id": conversation_id,
+            "parts": [{"kind": "text", "text": "And the next one?"}],
+        },
+    )
+    assert second.status_code == 200, second.text
+    provider: MockModelProvider = client.app.state.provider
+    history = provider.turns[-1].history
+    assert "user:Where is the record?" in history
+    assert any(line.startswith("assistant:") for line in history)
+    stored = client.get(f"/v1/conversations/{conversation_id}", headers=auth())
+    assert stored.status_code == 200, stored.text
+    interactions = stored.json()["interactions"]
+    assert [item["request_text"] for item in interactions] == [
+        "Where is the record?",
+        "And the next one?",
+    ]
+    hidden = client.get(f"/v1/conversations/{conversation_id}", headers=auth("dev-approver"))
+    assert hidden.status_code == 404
 
 
 def _upload(client: TestClient, payload: bytes, name: str) -> str:

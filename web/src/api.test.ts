@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { interactionBody, responseText } from "./api";
+import { interactionBody, keepConversation, responseText, turnsFromConversation } from "./api";
 
 describe("interaction request", () => {
   it("maps text, images, and audio without a principal", () => {
@@ -41,5 +41,22 @@ describe("interaction request", () => {
       audioId: "",
       speechError: "unsupported",
     });
+  });
+
+  it("keeps user and assistant turns in order", () => {
+    const turns = turnsFromConversation([
+      { request_text: "first question", parts: [{ kind: "text", text: "first answer" }] },
+      { request_text: "second question", parts: [{ kind: "text", text: "second answer" }] },
+    ]);
+    expect(turns.map((turn) => `${turn.role}:${turn.text}`)).toEqual([
+      "user:first question",
+      "assistant:first answer",
+      "user:second question",
+      "assistant:second answer",
+    ]);
+  });
+
+  it("keeps the conversation id when a turn fails", () => {
+    expect(keepConversation("conversation-1", true)).toBe("conversation-1");
   });
 });

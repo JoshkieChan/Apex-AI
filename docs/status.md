@@ -69,6 +69,8 @@ The implementation commit is `c0bcefdde6e61c799a32bf96a41975aefef6c4f9` on `m6-m
 
 Pull request https://github.com/JoshkieChan/Apex-AI/pull/2 is open from `m6-multimodal` into `master` and has not been merged. Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 remains open from `master` into `main` and has not been merged.
 
+A later pass keeps a pre-dispatch failure from sticking in `reserved`. The provider call is marked `dispatched` only when it is handed off. A context-assembly failure can be retried with the same key. A provider error that may already have been sent stays `outcome_uncertain` and is not sent again. One key and one payload produce one provider call. A different payload is `idempotency_conflict`. Completed turns include the user text and the assistant text, in that order, and another principal cannot read the conversation. The web client keeps the conversation id and reads it back. Conversation text is not governed memory. Local pytest on disposable database `apex_m6_suite` exited 0 with the rendered Compose test skipped in the image that has no Docker CLI. mypy reported no issues in 105 source files. The deployment probe printed `deployment-ok` with a password containing reserved URL characters. Vitest passed 5 tests, `tsc --noEmit` passed, and the Vite production build passed. Browser recording was not executed. Live OpenAI and Anthropic were not called. The development database remained `0009_controls`.
+
 ## Deferred
 
 - A paid or hosted MCP server, stdio MCP, and any A2A implementation. External agent interoperability stays deferred.

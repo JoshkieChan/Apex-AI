@@ -26,6 +26,7 @@ _STATUS = {
     "media_unavailable": 409,
     "project_mismatch": 409,
     "idempotency_conflict": 409,
+    "in_progress": 409,
     "outcome_uncertain": 409,
     "unsupported_capability": 422,
     "invalid_media": 400,
