@@ -117,9 +117,13 @@ class OpenAIAdapter:
                 timeout=timeout,
             )
         except httpx.TimeoutException as exc:
-            raise ProviderError("timeout", "The model provider timed out.") from exc
+            raise ProviderError(
+                "timeout", "The model provider timed out.", sent=True, confirmed=False
+            ) from exc
         except httpx.HTTPError as exc:
-            raise ProviderError("unavailable", "The model provider was unavailable.") from exc
+            raise ProviderError(
+                "unavailable", "The model provider was unavailable.", sent=True, confirmed=False
+            ) from exc
         if response.status_code >= 400:
             raise map_status(response.status_code)
         try:
@@ -152,9 +156,13 @@ class OpenAIAdapter:
                 timeout=timeout,
             )
         except httpx.TimeoutException as exc:
-            raise ProviderError("timeout", "The model provider timed out.") from exc
+            raise ProviderError(
+                "timeout", "The model provider timed out.", sent=True, confirmed=False
+            ) from exc
         except httpx.HTTPError as exc:
-            raise ProviderError("unavailable", "The model provider was unavailable.") from exc
+            raise ProviderError(
+                "unavailable", "The model provider was unavailable.", sent=True, confirmed=False
+            ) from exc
         if response.status_code >= 400:
             raise map_status(response.status_code)
         audio = response.content
@@ -210,34 +218,38 @@ class OpenAIAdapter:
 def _extract_content(payload: dict[str, Any]) -> dict[str, Any]:
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
-        raise ProviderError("invalid_output", "The model provider returned no choices.")
+        raise _rejected("The model provider returned no choices.")
     first = choices[0]
     if not isinstance(first, dict):
-        raise ProviderError("invalid_output", "The model provider returned an unexpected choice.")
+        raise _rejected("The model provider returned an unexpected choice.")
     message = first.get("message")
     if not isinstance(message, dict):
-        raise ProviderError("invalid_output", "The model provider returned no message.")
+        raise _rejected("The model provider returned no message.")
     if message.get("refusal"):
-        raise ProviderError("invalid_output", "The model provider refused the request.")
+        raise _rejected("The model provider refused the request.")
     content = message.get("content")
     if not isinstance(content, str):
-        raise ProviderError("invalid_output", "The model provider returned no text content.")
+        raise _rejected("The model provider returned no text content.")
     return parse_json_object(content)
 
 
 def _extract_text(payload: dict[str, Any]) -> str:
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        raise ProviderError("invalid_output", "The model provider returned no choices.")
+        raise _rejected("The model provider returned no choices.")
     message = choices[0].get("message")
     if not isinstance(message, dict):
-        raise ProviderError("invalid_output", "The model provider returned no message.")
+        raise _rejected("The model provider returned no message.")
     content = message.get("content")
     if not isinstance(content, str) or not content.strip():
-        raise ProviderError("invalid_output", "The model provider returned no text content.")
+        raise _rejected("The model provider returned no text content.")
     if len(content) > 16_000:
-        raise ProviderError("invalid_output", "The model provider returned an unbounded response.")
+        raise _rejected("The model provider returned an unbounded response.")
     return content
+
+
+def _rejected(message: str) -> ProviderError:
+    return ProviderError("invalid_output", message, sent=True, confirmed=True)
 
 
 def _usage(payload: dict[str, Any]) -> TokenUsage:

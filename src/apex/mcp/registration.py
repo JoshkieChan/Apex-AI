@@ -113,13 +113,20 @@ class McpRegistrationService:
             if credential_ref:
                 validate_secret_reference(credential_ref)
         existing = self._session.scalar(
-            select(McpServerRecord).where(McpServerRecord.server_key == server_key)
+            select(McpServerRecord).where(
+                McpServerRecord.server_key.in_((server_key, f"{owner_id}:{server_key}")),
+                McpServerRecord.owner_principal_id == owner_id,
+            )
         )
         if existing is not None:
             return existing
+        taken = self._session.scalar(
+            select(McpServerRecord).where(McpServerRecord.server_key == server_key)
+        )
+        stored_key = server_key if taken is None else f"{owner_id}:{server_key}"
         record = McpServerRecord(
             id=new_id(),
-            server_key=server_key,
+            server_key=stored_key,
             display_name=display_name,
             description="Registered MCP server. Credentials are stored only as references.",
             transport="inprocess" if server_key == "fixture" else "http",
@@ -210,16 +217,23 @@ class McpRegistrationService:
         verification_kind: str,
         now: datetime,
     ) -> McpToolRecord:
-        if risk not in {RiskLevel.low.value, RiskLevel.medium.value, RiskLevel.high.value}:
-            raise DomainError("invalid_registration", "Risk must be assigned by Apex.")
-        if not _PERMISSION.fullmatch(permission_key) or permission_key in _CONTROL:
-            raise DomainError("invalid_registration", "The permission key is not acceptable.")
         tool = self._session.get(McpToolRecord, tool_id)
         if tool is None or tool.registration_state == "revoked":
             raise DomainError("tool_not_found", "The discovered tool is not available to register.")
         server = self._session.get(McpServerRecord, tool.server_id)
         if server is None or server.trust_status != "reviewed":
             raise DomainError("server_unreviewed", "The MCP server has not been reviewed.")
+        from apex.connectors.catalog import mcp_policy
+
+        policy = mcp_policy(tool.tool_name)
+        if risk != policy.risk or permission_key != policy.permission_key:
+            raise DomainError(
+                "invalid_registration",
+                "Risk and permission are assigned by Apex.",
+            )
+        risk = policy.risk
+        permission_key = policy.permission_key
+        verification_kind = policy.verification_kind
         version = "1" if tool.version == "0" else str(int(tool.version) + 1)
         self._install(tool, server, risk, permission_key, verification_kind, version)
         tool.risk = risk
@@ -271,6 +285,20 @@ class McpRegistrationService:
         self._event(tool.id, actor_id, "revoked", {}, now)
         self._session.flush()
         return tool
+
+    def install_registered(self, tool: McpToolRecord, server: McpServerRecord) -> None:
+        """Install one persisted tool using the Apex catalog, not the stored risk."""
+        from apex.connectors.catalog import mcp_policy
+
+        policy = mcp_policy(tool.tool_name)
+        self._install(
+            tool,
+            server,
+            policy.risk,
+            policy.permission_key,
+            policy.verification_kind,
+            tool.version,
+        )
 
     def _install(
         self,
@@ -366,8 +394,10 @@ def _adapter(
         from datetime import UTC, datetime
 
         from apex.connectors.gates import enforce
+        from apex.connectors.project import execution_project
 
-        enforce(server_id, permission_key, None, datetime.now(UTC))
+        _refresh_gate_from_database(settings, server_id)
+        enforce(server_id, permission_key, execution_project(payload), datetime.now(UTC))
         arguments = {str(key): value for key, value in payload.items()}
         if transport == "inprocess":
             return cast(
@@ -391,3 +421,38 @@ def _adapter(
         )
 
     return run
+
+
+def _refresh_gate_from_database(settings: Settings | None, server_id: str) -> None:
+    """Replace a process-local ceiling with the committed connection row when one exists."""
+    if settings is None or not settings.database_url:
+        return
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from apex.persistence.models import Connection
+    from apex.persistence.session import create_db_engine, create_session_factory
+
+    engine = create_db_engine(settings.database_url)
+    try:
+        factory = create_session_factory(engine)
+        with factory() as session:
+            connection = session.scalar(
+                select(Connection).where(Connection.mcp_server_id == server_id)
+            )
+            if connection is None:
+                return
+            from apex.connectors.gates import ConnectionGate, set_gate
+
+            set_gate(
+                server_id,
+                ConnectionGate(
+                    state=connection.state,
+                    scopes=frozenset(connection.scopes or []),
+                    project_key=connection.project_key,
+                    expires_at=connection.expires_at,
+                ),
+            )
+    except SQLAlchemyError:
+        return
+    finally:
+        engine.dispose()

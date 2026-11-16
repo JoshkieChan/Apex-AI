@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 from ipaddress import IPv4Address
 from pathlib import Path
 
+import httpx2
 import pytest
 import uvicorn
 from alembic import command
@@ -41,6 +42,7 @@ from apex.mcp.fixture import (
     server,
 )
 from apex.mcp.registration import McpRegistrationService
+from apex.mcp.remote import _PinnedTransport, _transport_error
 from apex.persistence.base import Base
 from apex.persistence.models import Execution, Goal, GoalSubtask, PlanStep
 from apex.persistence.session import create_db_engine
@@ -100,6 +102,64 @@ def test_server_reported_tool_error_after_write_stays_uncertain(
             client, url, calls, monkeypatch, {"capability_failed"}
         ),
     )
+
+
+def test_connection_error_before_dispatch_stays_not_sent() -> None:
+    early = _transport_error(httpx2.ConnectError("connection refused"), sent=False)
+    assert early.dispatched is False
+    assert early.code == "capability_unavailable"
+    timed_out = _transport_error(httpx2.ConnectTimeout("connect timed out"), sent=False)
+    assert timed_out.dispatched is False
+    assert timed_out.code == "endpoint_timeout"
+
+
+def test_connection_error_after_dispatch_stays_sent() -> None:
+    lost = _transport_error(httpx2.ConnectError("connection reset"), sent=True)
+    assert lost.dispatched is True
+    assert lost.code == "capability_unavailable"
+    pooled = _transport_error(httpx2.PoolTimeout("pool"), sent=True)
+    assert pooled.dispatched is True
+    assert pooled.code == "endpoint_timeout"
+
+
+def test_session_cleanup_after_write_is_not_replayed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls = {"update": 0}
+    url, ca = _serve(tmp_path / "cleanup", _fault_after_apply(calls, b"records_update", "complete"))
+    monkeypatch.setenv("APEX_MCP_CA_FILE", str(ca))
+    original = _PinnedTransport.aclose
+
+    async def aclose(self: _PinnedTransport) -> None:
+        await original(self)
+        if self._dispatch.sent:
+            raise httpx2.ConnectError("session cleanup lost the connection")
+
+    monkeypatch.setattr(_PinnedTransport, "aclose", aclose)
+
+    def scenario(client: TestClient) -> None:
+        reset_fixture()
+        try:
+            _assert_applied_update(client, url, calls, monkeypatch, {"capability_unavailable"})
+            restarted = create_app(
+                settings=client.app.state.settings,
+                engine=client.app.state.engine,
+            )
+            with TestClient(restarted) as fresh:
+                report = recover_available(
+                    factory=fresh.app.state.session_factory,
+                    settings=fresh.app.state.settings,
+                    registry=fresh.app.state.registry,
+                    provider=fresh.app.state.provider,
+                    clock=fresh.app.state.clock,
+                )
+                assert report.goals_succeeded == 0
+            assert calls["update"] == 1
+            assert read_record("alpha") == {"name": "alpha", "status": "closed"}
+        finally:
+            reset_fixture()
+
+    _with_database(tmp_path, scenario)
 
 
 def test_pre_dispatch_remote_failure_is_definitive(
@@ -517,6 +577,8 @@ def _fault_after_apply(
             payload = _rewrite_result(payload, structured=False, tool_error=False)
         elif mode == "tool_error":
             payload = _rewrite_result(payload, structured=True, tool_error=True)
+        elif mode == "complete":
+            pass
         else:
             raise AssertionError(mode)
         await _send_replaced(send, captured, payload, content_type)

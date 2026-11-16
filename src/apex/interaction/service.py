@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from apex.clock import Clock, ensure_aware
@@ -53,6 +54,14 @@ _MAX_TEXT = 16_000
 class Submitted:
     view: InteractionView
     unlink: list[Path]
+
+
+class _Replay(Exception):
+    """The idempotency key already has a stored result."""
+
+    def __init__(self, submitted: Submitted) -> None:
+        self.submitted = submitted
+        super().__init__("replay")
 
 
 class InteractionService:
@@ -97,56 +106,74 @@ class InteractionService:
         return ConversationView(
             id=conversation.id,
             project_key=conversation.project_key,
-            interactions=[_stored_view(row) for row in rows if row.response_json is not None],
+            interactions=[
+                _stored_view(row).model_copy(update={"request_text": _request_text(row)})
+                for row in rows
+                if row.response_json is not None
+            ],
         )
 
     def submit(self, actor: Principal, body: InteractionCreate) -> Submitted:
         self.sweep()
         canonical = body.model_dump(mode="json")
-        existing = self._existing(actor, body.idempotency_key)
-        if existing is not None:
-            return self._replay(existing, canonical)
         conversation = self._open_conversation(actor, body)
         self._check_task(actor, body.task_id)
         caps = self._provider.capabilities()
         self._require_capabilities(body, caps)
         now = self._clock.now()
-        row = InteractionRecord(
-            id=new_id(),
-            conversation_id=conversation.id,
-            principal_id=actor.id,
-            idempotency_key=body.idempotency_key,
-            status="failed",
-            provider=self._provider.name,
-            model=self._provider.model_name,
-            error_code="in_progress",
-            request_json=canonical,
-            response_json=None,
-            created_at=now,
-        )
-        inputs = self._load_inputs(actor, body, now)
-        self._session.add(row)
-        self._session.commit()
-        unlink: list[Path] = []
         try:
+            row = self._reserve(actor, body, canonical, conversation, now)
+        except _Replay as replayed:
+            return replayed.submitted
+        unlink: list[Path] = []
+        inputs: list[tuple[MediaObject | None, InspectedMedia | None]] = []
+        try:
+            inputs = self._load_inputs(actor, body, now)
             view, generated = self._complete(actor, body, conversation, row, inputs, caps, now)
         except ProviderError as exc:
-            self._fail(row, exc.code)
             self._release_inputs(inputs, body, conversation, now, unlink)
+            self._provider_exit(row, exc)
             self._session.commit()
-            for path in unlink:
-                path.unlink(missing_ok=True)
+            self._unlink(unlink)
             _log(row, body, "failed", _media_bytes(inputs))
+            if exc.sent and not exc.confirmed:
+                raise DomainError(
+                    "outcome_uncertain",
+                    "The model request was sent and the outcome was not stored.",
+                ) from exc
             raise DomainError(
                 exc.code,
                 "The model provider did not complete the interaction.",
             ) from exc
+        except DomainError as exc:
+            self._release_inputs(inputs, body, conversation, now, unlink)
+            if row.error_code == "dispatched":
+                row.response_json = None
+                self._session.commit()
+                self._unlink(unlink)
+                raise DomainError(
+                    "outcome_uncertain",
+                    "The model request was sent and the outcome was not stored.",
+                ) from exc
+            self._abandon(row, exc.code)
+            self._session.commit()
+            self._unlink(unlink)
+            _log(row, body, "failed", _media_bytes(inputs))
+            raise
+        except Exception:
+            self._release_inputs(inputs, body, conversation, now, unlink)
+            if row.error_code != "dispatched":
+                self._abandon(row, "failed")
+            self._session.commit()
+            self._unlink(unlink)
+            raise
         self._release_inputs(inputs, body, conversation, now, unlink)
         if generated is not None:
             unlink = [path for path in unlink if path != generated]
         self._session.commit()
+        self._unlink(unlink)
         _log(row, body, row.status, _media_bytes(inputs))
-        return Submitted(view=view, unlink=unlink)
+        return Submitted(view=view, unlink=[])
 
     def sweep(self) -> None:
         """Delete expired rows and orphan files. Missing files are not an error."""
@@ -189,9 +216,16 @@ class InteractionService:
             parts=tuple(parts),
             timeout_seconds=self._settings.request_timeout_seconds,
         )
+        row.error_code = "dispatched"
+        self._session.commit()
         reply = self._provider.respond(turn)
         if len(reply.text) > _MAX_TEXT:
-            raise ProviderError("invalid_output", "The model response exceeded the size limit.")
+            raise ProviderError(
+                "invalid_output",
+                "The model response exceeded the size limit.",
+                sent=True,
+                confirmed=True,
+            )
         outputs.append(
             TextOutput(kind="text", text=reply.text, provenance="model", trust="advisory")
         )
@@ -331,6 +365,81 @@ class InteractionService:
             self._delete_row(row, now)
             unlink.append(media_path(self._root, row.storage_key))
 
+    def _reserve(
+        self,
+        actor: Principal,
+        body: InteractionCreate,
+        canonical: dict[str, object],
+        conversation: Conversation,
+        now: datetime,
+    ) -> InteractionRecord:
+        """Commit one reservation, or replay the row that already owns the key."""
+        existing = self._claim(actor, body.idempotency_key, canonical)
+        if existing is not None:
+            return existing
+        row = InteractionRecord(
+            id=new_id(),
+            conversation_id=conversation.id,
+            principal_id=actor.id,
+            idempotency_key=body.idempotency_key,
+            status="failed",
+            provider=self._provider.name,
+            model=self._provider.model_name,
+            error_code="reserved",
+            request_json=canonical,
+            response_json=None,
+            created_at=now,
+        )
+        self._session.add(row)
+        try:
+            self._session.commit()
+        except IntegrityError:
+            self._session.rollback()
+            claimed = self._claim(actor, body.idempotency_key, canonical)
+            if claimed is None:
+                raise
+            return claimed
+        return row
+
+    def _claim(
+        self,
+        actor: Principal,
+        key: str | None,
+        canonical: dict[str, object],
+    ) -> InteractionRecord | None:
+        existing = self._existing(actor, key)
+        if existing is None:
+            return None
+        replayed = self._replay(existing, canonical)
+        if replayed is not None:
+            raise _Replay(replayed)
+        existing.error_code = "reserved"
+        existing.status = "failed"
+        existing.response_json = None
+        self._session.commit()
+        return existing
+
+    def _provider_exit(self, row: InteractionRecord, exc: ProviderError) -> None:
+        if exc.sent and not exc.confirmed:
+            row.status = "failed"
+            row.error_code = "dispatched"
+            row.response_json = None
+            return
+        if not exc.sent:
+            self._abandon(row, exc.code)
+            return
+        self._fail(row, exc.code)
+
+    def _abandon(self, row: InteractionRecord, code: str) -> None:
+        """Record a failure that happened before the provider request was sent."""
+        row.status = "failed"
+        row.error_code = code
+        row.response_json = None
+
+    def _unlink(self, paths: list[Path]) -> None:
+        for path in paths:
+            path.unlink(missing_ok=True)
+
     def _fail(self, row: InteractionRecord, code: str) -> None:
         row.status = "failed"
         row.error_code = code
@@ -341,14 +450,20 @@ class InteractionService:
             "error_code": code,
         }
 
-    def _replay(self, existing: InteractionRecord, canonical: dict[str, object]) -> Submitted:
+    def _replay(
+        self, existing: InteractionRecord, canonical: dict[str, object]
+    ) -> Submitted | None:
         if existing.request_json != canonical:
             raise DomainError("idempotency_conflict", "The idempotency key was already used.")
-        if existing.error_code == "in_progress" or existing.response_json is None:
+        if existing.error_code == "reserved":
+            raise DomainError("in_progress", "This interaction is already in progress.")
+        if existing.error_code in {"in_progress", "dispatched"}:
             raise DomainError(
                 "outcome_uncertain",
                 "The interaction may already have been sent and was not stored.",
             )
+        if existing.response_json is None:
+            return None
         if existing.status == "failed":
             raise DomainError(
                 existing.error_code or "provider_failed",
@@ -423,12 +538,8 @@ class InteractionService:
         ).all()
         lines: list[str] = []
         for row in reversed(rows):
-            payload = row.response_json or {}
-            for part in payload.get("parts", []):
-                if isinstance(part, dict) and part.get("kind") in {"text", "transcript"}:
-                    text = part.get("text")
-                    if isinstance(text, str):
-                        lines.append(text[:2000])
+            lines.extend(_turn_lines(row.request_json, "user"))
+            lines.extend(_turn_lines(row.response_json, "assistant"))
         return lines
 
     def _require_capabilities(self, body: InteractionCreate, caps: ProviderCapabilities) -> None:
@@ -525,6 +636,33 @@ def _media_view(row: MediaObject) -> MediaView:
         trust=row.trust,  # type: ignore[arg-type]
         expires_at=row.expires_at,
     )
+
+
+def _request_text(row: InteractionRecord) -> str | None:
+    texts = [text for text in _part_texts(row.request_json) if text]
+    if not texts:
+        return None
+    return "\n".join(texts)
+
+
+def _turn_lines(payload: object, role: str) -> list[str]:
+    return [f"{role}:{text[:2000]}" for text in _part_texts(payload)]
+
+
+def _part_texts(payload: object) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    parts = payload.get("parts")
+    if not isinstance(parts, list):
+        return []
+    texts: list[str] = []
+    for part in parts:
+        if not isinstance(part, dict) or part.get("kind") not in {"text", "transcript"}:
+            continue
+        text = part.get("text")
+        if isinstance(text, str) and text:
+            texts.append(text)
+    return texts
 
 
 def _stored_view(row: InteractionRecord) -> InteractionView:

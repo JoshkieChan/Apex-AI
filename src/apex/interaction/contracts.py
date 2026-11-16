@@ -78,6 +78,7 @@ class InteractionView(ModelConfig):
     latency_ms: int
     error_code: str | None = None
     speech_error: str | None = None
+    request_text: str | None = None
     created_at: datetime
 
 

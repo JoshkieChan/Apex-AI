@@ -71,11 +71,13 @@ The implementation commit is `c0bcefdde6e61c799a32bf96a41975aefef6c4f9` on `m6-m
 
 Pull request https://github.com/JoshkieChan/Apex-AI/pull/2 is open from `m6-multimodal` into `master` and has not been merged. Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 remains open from `master` into `main` and has not been merged.
 
+A later pass keeps a pre-dispatch failure from sticking in `reserved`. The provider call is marked `dispatched` only when it is handed off. A context-assembly failure can be retried with the same key. A provider error that may already have been sent stays `outcome_uncertain` and is not sent again. One key and one payload produce one provider call. A different payload is `idempotency_conflict`. Completed turns include the user text and the assistant text, in that order, and another principal cannot read the conversation. The web client keeps the conversation id and reads it back. Conversation text is not governed memory. Local pytest on disposable database `apex_m6_suite` exited 0 with the rendered Compose test skipped in the image that has no Docker CLI. mypy reported no issues in 105 source files. The deployment probe printed `deployment-ok` with a password containing reserved URL characters. Vitest passed 5 tests, `tsc --noEmit` passed, and the Vite production build passed. Browser recording was not executed. Live OpenAI and Anthropic were not called. The development database remained `0009_controls`.
+
 ## M7 connectors
 
 M7 records external systems as connections. The MCP fixture, the reference inventory, and the reference device are the working paths. A registrar accepts each operation. The caller still needs a grant, and a high-risk note still needs a different principal's approval. Connection scopes, project, expiry, and revocation are checked before the fixture changes. Schema drift disables the capability. The reference note is non-idempotent: a lost response after the write stays uncertain. The multi-system goal reads the inventory item and then sets the reference device label. Verification reads those stores. A2A is documented in `docs/decisions/0016-a2a-boundary.md` and is not implemented. OAuth is not implemented. No live third-party account was called.
 
-Schema revision is `0008_connectors`. Connection gates and the reference inventory and device are process-local. The worker process still loads only the built-in capabilities, as it did for MCP. A revoked or drifted capability is disabled in the process that accepted it.
+Schema revision is `0008_connectors`. Accepted connector operations are stored in PostgreSQL. The API and the worker install those operations from the database, and the worker does so again on each poll. Risk and permission come from the Apex catalog, not from the client. A server key is not reused across owners. Health evidence cannot reactivate a disconnected, disabled, or revoked connection. The device owner can rotate a lost pairing code; only the hash is stored. The deployment probe registers the reference inventory and device through the API, restarts the worker, and the worker executes and verifies the coordinated goal. A second worker restart still executes it. Revoking the connections prevents a deferred goal from completing. The probe printed `connector-worker` and `deployment-ok`. The development database remained `0009_controls`.
 
 Local verification ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for pytest was Compose service `docker-postgres-1`. The run upgraded that database to `0008_connectors`.
 
@@ -165,6 +167,21 @@ Local verification of this correction ran in `python:3.12-slim` with `APEX_POSTG
 The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that image has no Docker CLI. The same file, run in a container with Docker Compose v2.32.4 and the host Docker daemon, passed both tests. `python -m tests.integration.deployment_probe` printed `deployment-ok` and exited 0. It used Compose project `apex-m52` and volume `apex_m52_disposable`. After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0006_reliability`.
 
 The closure commit is `1eda94877f95e51596460e8702e827f7cf979383` on `master`. GitHub Actions run `42724225582` (push) and run `42724231569` (pull request) both completed with success for that commit. Quality and deployment succeeded in each run. Those runs are https://github.com/JoshkieChan/Apex-AI/actions/runs/42724225582 and https://github.com/JoshkieChan/Apex-AI/actions/runs/42724231569.
+
+## Dispatch certainty and database credentials
+
+A connection reset, pool timeout, or session-close failure after `tools/call` has been handed to the network stays `possibly_sent`. The diagnostic code remains `capability_unavailable` or `endpoint_timeout`. The same failure before that handoff stays `not_sent`. An idempotent read is still a definitive failure. `/run`, replan, and worker recovery do not send the write again. This is not exactly-once delivery to an arbitrary remote system.
+
+API, worker, and migration processes build the database URL from `APEX_POSTGRES_HOST`, port, user, database, and password. The password is percent-encoded and is not logged. A host without a password fails closed. A password without a host is not a connection, so a Compose client can export the password for interpolation. An explicit `APEX_DATABASE_URL` is used when the host is absent. The production image still starts without database settings and reports `/ready` 503.
+
+Local verification ran in `python:3.12-slim` against a copy of this tree. Pytest used a disposable database, `apex_m52_suite`, on the existing PostgreSQL 16 server. It did not migrate or downgrade the `apex` database.
+
+- `ruff check .` — all checks passed
+- `ruff format --check .` — passed
+- `mypy` — no issues in 99 source files
+- `pytest` with `APEX_POSTGRES_TEST_URL` pointed at `apex_m52_suite` — exited 0, with `test_rendered_deploy_compose_requires_a_password_and_binds_loopback` skipped because that image has no Docker CLI
+
+`python -m tests.integration.deployment_probe` printed `deployment-ok` and exited 0. The disposable password contained `@ : / % ? # & +`. Fresh migrations, API startup, worker startup, and database connectivity used the encoded password. The production worker received the password as its own environment variable, not inside a URL. The log scan passed. After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` remained `0009_controls` from later milestone work on that same server. This branch's schema is still `0006_reliability`. Live Vault, live OIDC, and a paid MCP server were not called. The code commit is `8626439e7660bf7bb9aa1d4d5389c051b27b4800`. Push run `43967504189` and pull request run `43967513811` both completed with success. Quality and deployment succeeded in each. Those runs are https://github.com/JoshkieChan/Apex-AI/actions/runs/43967504189 and https://github.com/JoshkieChan/Apex-AI/actions/runs/43967513811. Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 stays open and unmerged.
 
 ## Verification recorded for the M5.2 remediation
 

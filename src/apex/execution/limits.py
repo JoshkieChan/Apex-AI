@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import os
 import time
 from collections.abc import Callable, Mapping
@@ -19,7 +20,8 @@ def run_bounded(
 ) -> dict[str, object]:
     """Execute an adapter and abandon the result if it exceeds the timeout."""
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="apex-adapter")
-    future = pool.submit(_invoke, adapter, payload, timeout_seconds)
+    context = contextvars.copy_context()
+    future = pool.submit(context.run, _invoke, adapter, payload, timeout_seconds)
     wait = timeout_seconds
     if os.environ.get("APEX_ENVIRONMENT") == "test" and os.environ.get("APEX_TEST_HOLD_ADAPTER"):
         # The process test signals the worker while this thread is blocked.

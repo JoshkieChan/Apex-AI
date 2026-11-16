@@ -27,7 +27,7 @@ COMPOSE = ["docker", "compose", "-p", "apex-m52", "-f", str(COMPOSE_FILE)]
 HOST = os.environ.get("APEX_DEPLOY_HOST", "127.0.0.1")
 API = f"http://{HOST}:18080"
 PROD = f"http://{HOST}:18082"
-PASSWORD = "acceptance-only-db-password"
+PASSWORD = "a@b:c/d%e?f#g&h+i"
 PRIVATE_KEY = ""
 SEQUENTIAL = (
     "Coordinate sequentially: count the words in 'alpha beta' then count the words in 'gamma'"
@@ -59,6 +59,7 @@ def main() -> None:
         _guard_config()
         _round_trip_schema()
         normal = _normal_goal()
+        _connector_worker()
         _restart_api(normal)
         _approval_stays_blocked()
         _terminal_goals_stay_put()
@@ -90,6 +91,131 @@ def _normal_goal() -> str:
         raise SystemExit("verification did not pass")
     print("scenario normal-execution", flush=True)
     return str(started["id"])
+
+
+def _connector_worker() -> None:
+    """Register reference connections through the API and execute them in the worker."""
+    api_id = _accept_connection(
+        {
+            "connection_key": "reference",
+            "kind": "api",
+            "display_name": "Reference inventory",
+            "endpoint": "apex-reference://inventory",
+        },
+        ["reference.lookup"],
+        ("lookup", "low", "reference.lookup"),
+    )
+    device_id, pairing_code, device = _register_device()
+    paired = _send(
+        "POST",
+        f"/v1/devices/{device}/pair",
+        {"pairing_code": pairing_code},
+        "dev-registrar",
+    )
+    if paired[0] != 200:
+        raise SystemExit(safe(f"device pair failed {paired[0]} {paired[1]}"))
+    _accept_connection(
+        None,
+        ["device.configure"],
+        ("configure", "medium", "device.configure"),
+        connection_id=device_id,
+    )
+    for permission in ("reference.lookup", "device.configure"):
+        _sql(
+            "INSERT INTO permission_grants "
+            "(id, principal_id, permission_key, effect, resource_scope, created_at) "
+            "SELECT gen_random_uuid()::text, id, %s, 'allow', '*', NOW() "
+            "FROM principals WHERE external_key = 'dev-user' "
+            "ON CONFLICT ON CONSTRAINT uq_permission_grants_principal_permission DO NOTHING",
+            (permission,),
+        )
+    _run(COMPOSE + ["restart", "worker"], timeout=120)
+    _wait_worker()
+    objective = "Coordinate reference systems: look up 'bolt' and label the reference device 'west'"
+    finished = _wait_goal(_submit(objective)["id"], "completed", timeout=60)
+    if finished.get("verifications") and finished["verifications"][0]["status"] != "passed":
+        raise SystemExit("connector verification did not pass")
+    _run(COMPOSE + ["restart", "worker"], timeout=120)
+    _wait_worker()
+    _wait_goal(_submit(objective)["id"], "completed", timeout=60)
+    _run(COMPOSE + ["stop", "worker"])
+    pending = _submit(objective)
+    if pending["status"] != "running":
+        raise SystemExit("revocation setup did not defer the connector goal")
+    for connection_id in (api_id, device_id):
+        status, revoked = _send(
+            "POST", f"/v1/connections/{connection_id}/revoke", None, "dev-registrar"
+        )
+        if status != 200 or revoked.get("state") != "revoked":
+            raise SystemExit(safe(f"connector revoke failed {status} {revoked}"))
+    _run(COMPOSE + ["start", "worker"])
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and _status(str(pending["id"])) == "running":
+        time.sleep(0.5)
+    if _status(str(pending["id"])) == "completed":
+        raise SystemExit("worker executed a revoked connector")
+    print("scenario connector-worker", flush=True)
+
+
+def _register_device() -> tuple[str, str, str]:
+    status, created = _send(
+        "POST",
+        "/v1/connections",
+        {
+            "connection_key": "reference-device",
+            "kind": "device",
+            "display_name": "Reference device",
+            "endpoint": "apex-device://reference",
+        },
+        "dev-registrar",
+    )
+    if status != 200:
+        raise SystemExit(safe(f"device registration failed {status} {created}"))
+    return str(created["id"]), str(created["pairing_code"]), str(created["device_id"])
+
+
+def _accept_connection(
+    body: dict[str, object] | None,
+    scopes: list[str],
+    operation: tuple[str, str, str],
+    connection_id: str | None = None,
+) -> str:
+    if body is not None:
+        status, created = _send("POST", "/v1/connections", body, "dev-registrar")
+        if status != 200:
+            raise SystemExit(safe(f"connector registration failed {status} {created}"))
+        connection_id = str(created["id"])
+    if connection_id is None:
+        raise SystemExit("connector registration did not return an id")
+    status, authorized = _send(
+        "POST",
+        f"/v1/connections/{connection_id}/authorize",
+        {"scopes": scopes},
+        "dev-registrar",
+    )
+    if status != 200:
+        raise SystemExit(safe(f"connector authorization failed {status} {authorized}"))
+    status, discovered = _send(
+        "POST", f"/v1/connections/{connection_id}/discover", None, "dev-registrar"
+    )
+    if status != 200:
+        raise SystemExit(safe(f"connector discovery failed {status} {discovered}"))
+    operations = discovered.get("operations")
+    if not isinstance(operations, list):
+        raise SystemExit("connector discovery returned no operations")
+    key, risk, permission = operation
+    selected = next(
+        item for item in operations if isinstance(item, dict) and item.get("operation_key") == key
+    )
+    status, accepted = _send(
+        "POST",
+        f"/v1/connections/{connection_id}/operations/{selected['id']}/accept",
+        {"risk": risk, "permission_key": permission},
+        "dev-registrar",
+    )
+    if status != 200 or accepted.get("available") is not True:
+        raise SystemExit(safe(f"connector accept failed {status} {accepted}"))
+    return connection_id
 
 
 def _restart_api(goal_id: str) -> None:
@@ -164,8 +290,10 @@ def _worker_restart_does_not_duplicate() -> None:
     )
     held = COMPOSE + ["-f", str(override)]
     rendered = _run(held + ["config"], timeout=60)
-    if "APEX_DATABASE_URL" not in rendered or "APEX_TEST_HOLD_AFTER_SUBTASK" not in rendered:
+    if "APEX_POSTGRES_HOST" not in rendered or "APEX_TEST_HOLD_AFTER_SUBTASK" not in rendered:
         raise SystemExit("compose did not keep the worker database settings")
+    if "postgresql+psycopg://" in rendered:
+        raise SystemExit("compose put the database password in a URL")
     _run(held + ["up", "-d", "--no-deps", "--force-recreate", "worker"], timeout=180)
     _wait_worker()
     started = _submit(SEQUENTIAL)
@@ -237,8 +365,14 @@ def _database_outage() -> None:
         raise SystemExit("memory delete failed")
     _sql("UPDATE memories SET deleted_at = NOW() - INTERVAL '48 hours' WHERE id = %s", (memory_id,))
     purged = _send("POST", "/v1/memory/purge", None, subject="dev-approver")
-    if purged[0] != 200 or int(purged[1].get("purged", 0)) < 1:
+    if purged[0] != 200:
         raise SystemExit(safe(f"purge failed {purged}"))
+    # The worker may purge the aged row before this request. Either actor is valid.
+    remaining = int(_scalar_params("SELECT COUNT(*) FROM memories WHERE id = %s", (memory_id,)))
+    if int(purged[1].get("purged", 0)) < 1 and remaining != 0:
+        raise SystemExit(safe(f"purge failed {purged}"))
+    if remaining != 0:
+        raise SystemExit("purge left the memory row")
     before = _scalar("SELECT COUNT(*) FROM executions")
     _run(COMPOSE + ["stop", "postgres"])
     _wait_worker_status(503)
@@ -309,9 +443,8 @@ def _production_image() -> None:
         raise SystemExit("production image accepted development authentication")
     if b"BEGIN" in refused.stdout or b"BEGIN" in refused.stderr:
         raise SystemExit("production refusal printed key material")
-    database_url = f"postgresql+psycopg://apex:{PASSWORD}@postgres:5432/apex"
     env = os.environ.copy()
-    env["APEX_DATABASE_URL"] = database_url
+    env["APEX_POSTGRES_PASSWORD"] = PASSWORD
     _run(
         [
             "docker",
@@ -326,7 +459,15 @@ def _production_image() -> None:
             "-e",
             "APEX_DEV_AUTH_ENABLED=false",
             "-e",
-            "APEX_DATABASE_URL",
+            "APEX_POSTGRES_HOST=postgres",
+            "-e",
+            "APEX_POSTGRES_PORT=5432",
+            "-e",
+            "APEX_POSTGRES_USER=apex",
+            "-e",
+            "APEX_POSTGRES_DB=apex",
+            "-e",
+            "APEX_POSTGRES_PASSWORD",
             "-e",
             "APEX_INSTANCE_ID=prod-worker",
             "-e",
@@ -497,6 +638,8 @@ def _wait_goal(goal_id: str, expected: str, timeout: int = 40) -> dict[str, obje
         last = str(body.get("status") or status)
         if status == 200 and last == expected:
             return body
+        if status == 200 and last in {"failed", "partial", "uncertain", "cancelled"}:
+            raise SystemExit(safe(f"goal became {last}: {body}"))
         time.sleep(0.5)
     raise SystemExit(f"goal stayed {last}, expected {expected}")
 
@@ -621,13 +764,13 @@ def _json(raw: bytes) -> dict[str, object]:
 
 
 def _sql(statement: str, params: tuple[object, ...]) -> None:
-    with psycopg.connect(_dsn(), connect_timeout=5) as connection:
+    with _connect() as connection:
         connection.execute(statement, params)
         connection.commit()
 
 
 def _scalar(statement: str) -> object:
-    with psycopg.connect(_dsn(), connect_timeout=5) as connection:
+    with _connect() as connection:
         row = connection.execute(statement).fetchone()
     if row is None:
         raise SystemExit(statement)
@@ -635,7 +778,7 @@ def _scalar(statement: str) -> object:
 
 
 def _subtasks(goal_id: str) -> dict[str, str | None]:
-    with psycopg.connect(_dsn(), connect_timeout=5) as connection:
+    with _connect() as connection:
         rows = connection.execute(
             "SELECT subtask_key, execution_id FROM goal_subtasks WHERE goal_id = %s",
             (goal_id,),
@@ -648,7 +791,7 @@ def _execution_count(task_id: str) -> int:
 
 
 def _step_counts(task_id: str) -> list[object]:
-    with psycopg.connect(_dsn(), connect_timeout=5) as connection:
+    with _connect() as connection:
         return list(
             connection.execute(
                 "SELECT plan_step_id FROM executions WHERE task_id = %s "
@@ -659,15 +802,22 @@ def _step_counts(task_id: str) -> list[object]:
 
 
 def _scalar_params(statement: str, params: tuple[object, ...]) -> object:
-    with psycopg.connect(_dsn(), connect_timeout=5) as connection:
+    with _connect() as connection:
         row = connection.execute(statement, params).fetchone()
     if row is None:
         raise SystemExit(statement)
     return row[0]
 
 
-def _dsn() -> str:
-    return f"host={HOST} port=55433 dbname=apex user=apex password={PASSWORD}"
+def _connect() -> psycopg.Connection:
+    return psycopg.connect(
+        host=HOST,
+        port=55433,
+        dbname="apex",
+        user="apex",
+        password=PASSWORD,
+        connect_timeout=5,
+    )
 
 
 def _container_id(name: str) -> str:
