@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -116,15 +116,21 @@ class InteractionService:
     def submit(self, actor: Principal, body: InteractionCreate) -> Submitted:
         self.sweep()
         canonical = body.model_dump(mode="json")
-        conversation = self._open_conversation(actor, body)
         self._check_task(actor, body.task_id)
         caps = self._provider.capabilities()
         self._require_capabilities(body, caps)
         now = self._clock.now()
+        prior = self._existing(actor, body.idempotency_key)
+        if prior is not None:
+            conversation = self._conversation_row(actor, prior.conversation_id)
+        else:
+            conversation = self._open_conversation(actor, body)
         try:
             row = self._reserve(actor, body, canonical, conversation, now)
         except _Replay as replayed:
             return replayed.submitted
+        if row.conversation_id != conversation.id:
+            conversation = self._conversation_row(actor, row.conversation_id)
         unlink: list[Path] = []
         inputs: list[tuple[MediaObject | None, InspectedMedia | None]] = []
         try:
@@ -146,8 +152,8 @@ class InteractionService:
                 "The model provider did not complete the interaction.",
             ) from exc
         except DomainError as exc:
-            self._release_inputs(inputs, body, conversation, now, unlink)
             if row.error_code == "dispatched":
+                self._release_inputs(inputs, body, conversation, now, unlink)
                 row.response_json = None
                 self._session.commit()
                 self._unlink(unlink)
@@ -157,12 +163,12 @@ class InteractionService:
                 ) from exc
             self._abandon(row, exc.code)
             self._session.commit()
-            self._unlink(unlink)
             _log(row, body, "failed", _media_bytes(inputs))
             raise
         except Exception:
-            self._release_inputs(inputs, body, conversation, now, unlink)
-            if row.error_code != "dispatched":
+            if row.error_code == "dispatched":
+                self._release_inputs(inputs, body, conversation, now, unlink)
+            else:
                 self._abandon(row, "failed")
             self._session.commit()
             self._unlink(unlink)
@@ -207,6 +213,9 @@ class InteractionService:
         caps: ProviderCapabilities,
         now: datetime,
     ) -> tuple[InteractionView, Path | None]:
+        if any(part.kind == "audio" for part in body.parts):
+            row.error_code = "dispatched"
+            self._session.commit()
         parts, outputs = self._normalize_inputs(body, inputs)
         history = self._history(conversation.id, row.id)
         memory_lines = self._memory_lines(actor, body)
@@ -413,11 +422,30 @@ class InteractionService:
         replayed = self._replay(existing, canonical)
         if replayed is not None:
             raise _Replay(replayed)
-        existing.error_code = "reserved"
-        existing.status = "failed"
-        existing.response_json = None
+        expected = existing.error_code
+        result = self._session.execute(
+            update(InteractionRecord)
+            .where(
+                InteractionRecord.id == existing.id,
+                InteractionRecord.error_code == expected,
+            )
+            .values(error_code="reserved", status="failed", response_json=None)
+            .returning(InteractionRecord.id)
+            .execution_options(synchronize_session=False)
+        )
+        claimed = result.scalar_one_or_none()
+        result.close()
         self._session.commit()
-        return existing
+        if claimed is not None:
+            self._session.expire_all()
+            return self._existing(actor, key)
+        current = self._existing(actor, key)
+        if current is None:
+            return None
+        replayed = self._replay(current, canonical)
+        if replayed is not None:
+            raise _Replay(replayed)
+        raise DomainError("in_progress", "This interaction is already in progress.")
 
     def _provider_exit(self, row: InteractionRecord, exc: ProviderError) -> None:
         if exc.sent and not exc.confirmed:
@@ -538,8 +566,9 @@ class InteractionService:
         ).all()
         lines: list[str] = []
         for row in reversed(rows):
-            lines.extend(_turn_lines(row.request_json, "user"))
-            lines.extend(_turn_lines(row.response_json, "assistant"))
+            lines.extend(_turn_lines(row.request_json, "user", frozenset({"text"})))
+            lines.extend(_turn_lines(row.response_json, "user", frozenset({"transcript"})))
+            lines.extend(_turn_lines(row.response_json, "assistant", frozenset({"text"})))
         return lines
 
     def _require_capabilities(self, body: InteractionCreate, caps: ProviderCapabilities) -> None:
@@ -645,11 +674,12 @@ def _request_text(row: InteractionRecord) -> str | None:
     return "\n".join(texts)
 
 
-def _turn_lines(payload: object, role: str) -> list[str]:
-    return [f"{role}:{text[:2000]}" for text in _part_texts(payload)]
+def _turn_lines(payload: object, role: str, kinds: frozenset[str]) -> list[str]:
+    return [f"{role}:{text[:2000]}" for text in _part_texts(payload, kinds)]
 
 
-def _part_texts(payload: object) -> list[str]:
+def _part_texts(payload: object, kinds: frozenset[str] | None = None) -> list[str]:
+    allowed = kinds or frozenset({"text", "transcript"})
     if not isinstance(payload, dict):
         return []
     parts = payload.get("parts")
@@ -657,7 +687,7 @@ def _part_texts(payload: object) -> list[str]:
         return []
     texts: list[str] = []
     for part in parts:
-        if not isinstance(part, dict) or part.get("kind") not in {"text", "transcript"}:
+        if not isinstance(part, dict) or part.get("kind") not in allowed:
             continue
         text = part.get("text")
         if isinstance(text, str) and text:
