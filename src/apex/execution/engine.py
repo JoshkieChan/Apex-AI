@@ -18,7 +18,7 @@ from apex.errors import AdvanceYield, DomainError
 from apex.execution.limits import run_bounded
 from apex.execution.resolve import resolve_bindings
 from apex.logging_config import get_logger
-from apex.operations.controls import execution_suspended
+from apex.operations.controls import claim_execution_slot
 from apex.persistence.models import Approval, Delegation, Execution, PlanStep
 from apex.persistence.repository import executions_for_step, succeeded_execution
 from apex.runtime_ids import canonical_json, new_id
@@ -111,7 +111,7 @@ class ExecutionEngine:
             raise DomainError("approval_replayed", "This approval was already used.")
         if any(item.status == ExecutionStatus.running.value for item in prior):
             raise AdvanceYield()
-        if execution_suspended(self._session):
+        if not claim_execution_slot(self._session):
             logger.info(
                 "execution held task_id=%s capability_id=%s",
                 task_id,

@@ -67,7 +67,7 @@ uv run python -m tests.integration.deployment_probe
 
 Do not point that file at port 5432 or `docker_apex_pg_data`.
 
-Backup and restore are in `docs/operations/backup.md`. The disposable proof is `python -m tests.integration.backup_restore`. It uses container `apex-m8-backup`, port `55434`, and volume `apex_m8_backup`. Runbooks are in `docs/operations/runbooks.md`.
+Backup and restore are in `docs/operations/backup.md`. The disposable proof is `python -m tests.integration.backup_restore`. It uses a uniquely named container, port, and volume, and it deletes only those labeled resources. Runbooks are in `docs/operations/runbooks.md`.
 
 ## Logs
 

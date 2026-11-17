@@ -17,7 +17,7 @@ The application does not run `pg_dump` itself. The operator does.
 
 ## Restore proof
 
-`python -m tests.integration.backup_restore` starts PostgreSQL 16 as container `apex-m8-backup` on `127.0.0.1:55434` with volume `apex_m8_backup`. It upgrades an empty database, writes a marker into `runtime_controls`, dumps it, drops `public`, restores the dump, and checks the marker and revision `0009_controls`. It then removes that container and volume. It does not attach `docker_apex_pg_data`.
+`python -m tests.integration.backup_restore` starts PostgreSQL 16 in a uniquely named container, volume, and host port. It upgrades an empty database, writes a marker into `runtime_controls`, dumps it, drops `public`, restores the dump, and checks the marker and revision `0009_controls`. Cleanup deletes only resources labeled for that run. It refuses a pre-existing volume, and it does not attach `docker_apex_pg_data`.
 
 A successful run prints `backup-restore-ok`. That proves this dump format can be restored into an empty database. It does not prove a particular production backup was taken.
 
