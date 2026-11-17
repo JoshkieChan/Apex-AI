@@ -38,6 +38,7 @@ class CapabilitySpec:
     supports_independent_readback: bool = False
     supports_cancellation: bool = False
     verification_method: str = "recompute"
+    owner_principal_id: str | None = None
 
 
 class CapabilityRegistry:

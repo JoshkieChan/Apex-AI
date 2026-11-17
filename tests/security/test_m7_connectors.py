@@ -376,6 +376,7 @@ def test_lost_pairing_code_can_be_rotated_once(client: TestClient, session: Sess
     duplicate = client.post("/v1/connections", headers=auth("dev-registrar"), json=_device_body())
     assert duplicate.status_code == 200
     assert duplicate.json().get("pairing_code") is None
+    assert duplicate.json()["device_id"] == device_id
     rotated = client.post(
         f"/v1/devices/{device_id}/pairing-code",
         headers=auth("dev-registrar"),
@@ -636,6 +637,81 @@ def _grant(session: Session, subject: str, permission: str, effect: str) -> None
         )
     )
     session.commit()
+
+
+def test_same_owner_connections_do_not_share_a_server(client: TestClient, session: Session) -> None:
+    from apex.mcp.registration import McpRegistrationService
+
+    service = McpRegistrationService(session, client.app.state.registry, client.app.state.settings)
+    owner = _principal(session, "dev-user").id
+    now = datetime.now(UTC)
+    first = service.add_server(
+        owner_id=owner,
+        server_key="fixture",
+        display_name="First",
+        now=now,
+        connection_key="link-one",
+    )
+    second = service.add_server(
+        owner_id=owner,
+        server_key="fixture",
+        display_name="Second",
+        now=now,
+        connection_key="link-two",
+    )
+    assert first.id != second.id
+    first.trust_status = "revoked"
+    session.flush()
+    assert second.trust_status == "unreviewed"
+
+
+def test_owner_intent_uses_that_owners_capability(client: TestClient) -> None:
+    from apex.capabilities.registry import CapabilityRegistry, CapabilitySpec
+    from apex.contracts.schemas import RiskLevel
+    from apex.intent.engine import IntentEngine
+    from apex.mcp.registration import LookupInput, LookupOutput
+
+    registry = CapabilityRegistry()
+
+    def adapter(payload: dict[str, object], timeout: float) -> dict[str, object]:
+        del payload, timeout
+        return {"found": False, "name": "alpha"}
+
+    for capability_id, owner in (
+        ("mcp.fixture.records_lookup", "owner-a"),
+        ("mcp.owner-b-link.records_lookup", "owner-b"),
+    ):
+        registry.register(
+            CapabilitySpec(
+                id=capability_id,
+                name="records_lookup",
+                description="Lookup",
+                permission_key="records.lookup",
+                risk=RiskLevel.low,
+                input_model=LookupInput,
+                output_model=LookupOutput,
+                adapter=adapter,
+                verification_kind="none",
+                owner_principal_id=owner,
+            )
+        )
+    intent = IntentEngine(registry).interpret(
+        "Look up fixture record alpha",
+        principal_id="owner-b",
+    )
+    assert intent.required_capabilities == ["mcp.owner-b-link.records_lookup"]
+
+
+def test_reviewed_mcp_tool_without_a_connection_stays_available() -> None:
+    from types import SimpleNamespace
+
+    from apex.connectors.hydration import _mcp_usable
+
+    tool = SimpleNamespace(registration_state="registered", available=True)
+    server = SimpleNamespace(trust_status="reviewed")
+    assert _mcp_usable(tool, server, None) is True
+    tool.available = False
+    assert _mcp_usable(tool, server, None) is False
 
 
 def _principal(session: Session, subject: str) -> Principal:

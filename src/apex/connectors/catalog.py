@@ -204,15 +204,18 @@ def reference_adapter(
     device_key: str | None,
     settings: Settings | None = None,
 ) -> Any:
-    """Build an adapter that checks the connection ceiling before it touches state."""
+    """Build an adapter that checks the connection ceiling before it touches state.
+
+    The execution engine loads the device and the connection ceiling. The adapter
+    does not open a database connection.
+    """
+    del settings
 
     def run(payload: Mapping[str, object], timeout_seconds: float) -> dict[str, object]:
         del timeout_seconds
         from apex.connectors.project import execution_project
 
         enforce(gate_key, permission, execution_project(payload), datetime.now(UTC))
-        if kind == "device" and device_key is not None:
-            _restore_device(settings, device_key)
         if kind == "api" and operation_key == "lookup":
             item = read_item(str(payload["item"]))
             if item is None:
@@ -246,36 +249,3 @@ def reference_adapter(
         raise DomainError("unsupported_operation", "This operation has no Apex adapter.")
 
     return run
-
-
-def _restore_device(settings: Settings | None, device_key: str) -> None:
-    """Rebuild the process-local device from the committed pairing row.
-
-    The reference store is not shared across processes. A missing or unreadable
-    database leaves an in-process test device unchanged.
-    """
-    if settings is None or not settings.database_url:
-        return
-    from sqlalchemy import select
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from apex.connectors.reference import mark_device_paired, remember_device
-    from apex.persistence.models import DeviceRecord
-    from apex.persistence.session import create_db_engine, create_session_factory
-
-    engine = create_db_engine(settings.database_url)
-    try:
-        with create_session_factory(engine)() as session:
-            device = session.scalar(
-                select(DeviceRecord).where(DeviceRecord.device_key == device_key)
-            )
-            if device is None:
-                return
-            if read_device(device_key) is None:
-                remember_device(device_key)
-            if device.pairing_state == "paired":
-                mark_device_paired(device_key)
-    except SQLAlchemyError:
-        return
-    finally:
-        engine.dispose()

@@ -190,6 +190,9 @@ class ExecutionEngine:
         project_token = bind_project(None if task is None else task.project_key)
         try:
             try:
+                from apex.connectors.hydration import bind_execution_ceiling
+
+                bind_execution_ceiling(self._session, spec.id)
                 raw = run_bounded(spec.adapter, payload, spec.timeout_seconds)
                 output = spec.output_model.model_validate(raw)
             except DomainError as exc:

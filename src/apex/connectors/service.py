@@ -391,6 +391,7 @@ class ConnectionService:
             transport="inprocess" if body.server_key == "fixture" else "http",
             endpoint=None if body.server_key == "fixture" else body.endpoint,
             credential_ref=None if body.server_key == "fixture" else secret,
+            connection_key=body.connection_key,
         )
         return server.endpoint, server.credential_ref, server
 
@@ -568,6 +569,7 @@ class ConnectionService:
             supports_independent_readback=True,
             supports_cancellation=False,
             verification_method="independent_readback",
+            owner_principal_id=connection.owner_principal_id,
         )
         self._registry.replace(spec)
 
@@ -669,6 +671,7 @@ class ConnectionService:
             raise DomainError("conflict", "That connection key is already registered.")
 
     def _view(self, connection: Connection) -> ConnectionView:
+        device = self._device(connection)
         return ConnectionView(
             id=connection.id,
             connection_key=connection.connection_key,
@@ -687,6 +690,7 @@ class ConnectionService:
             expires_at=connection.expires_at,
             last_health_at=connection.last_health_at,
             revoked_at=connection.revoked_at,
+            device_id=None if device is None else device.id,
         )
 
     def _log(self, connection: Connection, outcome: str) -> None:

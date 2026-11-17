@@ -13,7 +13,12 @@ from apex.config import Settings
 from apex.connectors.gates import ConnectionGate, set_gate
 from apex.connectors.service import ConnectionService
 from apex.mcp.registration import McpRegistrationService
-from apex.persistence.models import Connection, ConnectionOperation, McpServerRecord, McpToolRecord
+from apex.persistence.models import (
+    Connection,
+    ConnectionOperation,
+    McpServerRecord,
+    McpToolRecord,
+)
 
 
 def hydrate_registry(session: Session, registry: CapabilityRegistry, settings: Settings) -> None:
@@ -66,16 +71,64 @@ def connection_is_current(connection: Connection, now: datetime | None = None) -
     return True
 
 
+def bind_execution_ceiling(session: Session, capability_id: str) -> None:
+    """Refresh the process ceiling from the committed row before an adapter runs.
+
+    The adapter does not open a database connection. A missing connection leaves
+    a legacy MCP tool ungated. A revoked or disabled row replaces a stale gate.
+    """
+    tool = session.scalar(select(McpToolRecord).where(McpToolRecord.capability_id == capability_id))
+    connection: Connection | None
+    gate_key: str | None
+    if tool is not None:
+        gate_key = tool.server_id
+        connection = session.scalar(
+            select(Connection).where(Connection.mcp_server_id == tool.server_id)
+        )
+    else:
+        operation = session.scalar(
+            select(ConnectionOperation).where(ConnectionOperation.capability_id == capability_id)
+        )
+        if operation is None:
+            return
+        connection = session.get(Connection, operation.connection_id)
+        gate_key = None if connection is None else connection.id
+    if connection is None or gate_key is None:
+        if gate_key is not None:
+            set_gate(gate_key, None)
+        return
+    gate = ConnectionGate(
+        state=connection.state,
+        scopes=frozenset(connection.scopes or []),
+        project_key=connection.project_key,
+        expires_at=connection.expires_at,
+    )
+    set_gate(gate_key, gate)
+    set_gate(connection.id, gate)
+    if connection.kind != "device":
+        return
+    from apex.connectors.reference import mark_device_paired, read_device, remember_device
+    from apex.persistence.models import DeviceRecord
+
+    device = session.scalar(select(DeviceRecord).where(DeviceRecord.connection_id == connection.id))
+    if device is None or read_device(device.device_key) is not None:
+        return
+    remember_device(device.device_key)
+    if device.pairing_state == "paired":
+        mark_device_paired(device.device_key)
+
+
 def _mcp_usable(
     tool: McpToolRecord, server: McpServerRecord, connection: Connection | None
 ) -> bool:
-    return (
-        connection is not None
-        and connection_is_current(connection)
-        and tool.registration_state == "registered"
+    registered = (
+        tool.registration_state == "registered"
         and tool.available
         and server.trust_status == "reviewed"
     )
+    if connection is None:
+        return registered
+    return registered and connection_is_current(connection)
 
 
 def _operation_usable(operation: ConnectionOperation, connection: Connection) -> bool:
