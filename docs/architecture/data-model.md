@@ -1,6 +1,6 @@
 # Data model
 
-PostgreSQL is the local development database. Tests create the same SQLAlchemy metadata on SQLite. Alembic revisions `0001_initial` through `0006_reliability` are the schema source for a real database. Application startup does not call `create_all`. Do not edit an applied revision; add a new one. Production readiness requires `0006_reliability`. `0006_reliability` adds goal lease columns, `goal_verifications`, and `memory_purges`. It downgrades by dropping those columns and tables.
+PostgreSQL is the local development database. Tests create the same SQLAlchemy metadata on SQLite. Alembic revisions `0001_initial` through `0007_interaction` are the schema source for a real database. Application startup does not call `create_all`. Do not edit an applied revision; add a new one. Production readiness requires `0007_interaction`. `0006_reliability` adds goal lease columns, `goal_verifications`, and `memory_purges`. `0007_interaction` adds `conversations`, `interactions`, and `media_objects`. It downgrades by dropping those three tables. Raw image and audio bytes are not columns.
 
 ## Tables
 
@@ -20,6 +20,9 @@ PostgreSQL is the local development database. Tests create the same SQLAlchemy m
 - `logical_agents` — role definitions and lifecycle. `allowed_permissions` is an upper bound, not a grant.
 - `goals`, `goal_subtasks`, `agent_invocations`, `plan_revisions`, `goal_events`, `goal_verifications` — a coordinated objective, its graph, one row per agent attempt, each accepted revision, the coordination audit, and the verification decision for a plan revision. `goals` also stores `lease_owner`, `lease_expires_at`, and `recovery_attempts`. Invocation payloads store memory ids, not memory content. Verification evidence stores check names and the revision, not secret values.
 - `memory_purges` — tombstones for physically removed memories. Columns are the memory id, scope, revision count, and time. There is no content column.
+- `conversations` — one multimodal session for one principal. `project_key` is optional. This is not a memory.
+- `interactions` — one turn. `request_json` and `response_json` store the normalized contract. Status is `completed` or `failed`. A reserved turn uses `failed` with `error_code` `in_progress` until the provider returns. Unique on `(principal_id, idempotency_key)` when the key is present.
+- `media_objects` — metadata for a temporary file: kind, media type, size, digest, dimensions or duration, provenance, trust, expiry, and deletion time. `storage_key` is a generated 32-character hex name. The file is not in the database.
 
 Foreign keys use `ON DELETE RESTRICT`. Status columns have check constraints. JSON columns store validated payloads: intent, step input, execution input and output, evidence, and context content. They are not a substitute for the task status or the principal.
 

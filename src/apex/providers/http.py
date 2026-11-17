@@ -13,14 +13,34 @@ from apex.providers.errors import ProviderError
 def map_status(status_code: int) -> ProviderError:
     """Map an HTTP status to a normalized provider error without including the body."""
     if status_code in {401, 403}:
-        return ProviderError("authentication", "The model provider rejected the credentials.")
+        return ProviderError(
+            "authentication",
+            "The model provider rejected the credentials.",
+            sent=True,
+            confirmed=True,
+        )
     if status_code == 429:
-        return ProviderError("rate_limit", "The model provider rate-limited the request.")
+        return ProviderError(
+            "rate_limit",
+            "The model provider rate-limited the request.",
+            sent=True,
+            confirmed=True,
+        )
     if status_code == 408:
-        return ProviderError("timeout", "The model provider timed out.")
+        return ProviderError("timeout", "The model provider timed out.", sent=True, confirmed=False)
     if status_code >= 500:
-        return ProviderError("unavailable", "The model provider was unavailable.")
-    return ProviderError("invalid_output", "The model provider rejected the request.")
+        return ProviderError(
+            "unavailable",
+            "The model provider was unavailable.",
+            sent=True,
+            confirmed=False,
+        )
+    return ProviderError(
+        "invalid_output",
+        "The model provider rejected the request.",
+        sent=True,
+        confirmed=True,
+    )
 
 
 def post_json(
@@ -34,18 +54,40 @@ def post_json(
     """POST JSON and return a decoded object. Response bodies are not included in errors."""
     try:
         response = client.post(url, headers=headers, json=body, timeout=timeout)
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+        code = "timeout" if isinstance(exc, httpx.TimeoutException) else "unavailable"
+        raise ProviderError(
+            code,
+            "The model provider was not reached.",
+            sent=False,
+            confirmed=False,
+        ) from exc
     except httpx.TimeoutException as exc:
-        raise ProviderError("timeout", "The model provider timed out.") from exc
+        raise ProviderError(
+            "timeout", "The model provider timed out.", sent=True, confirmed=False
+        ) from exc
     except httpx.HTTPError as exc:
-        raise ProviderError("unavailable", "The model provider was unavailable.") from exc
+        raise ProviderError(
+            "unavailable", "The model provider was unavailable.", sent=True, confirmed=False
+        ) from exc
     if response.status_code >= 400:
         raise map_status(response.status_code)
     try:
         payload = response.json()
     except json.JSONDecodeError as exc:
-        raise ProviderError("invalid_output", "The model provider returned invalid JSON.") from exc
+        raise ProviderError(
+            "invalid_output",
+            "The model provider returned invalid JSON.",
+            sent=True,
+            confirmed=False,
+        ) from exc
     if not isinstance(payload, dict):
-        raise ProviderError("invalid_output", "The model provider returned an unexpected payload.")
+        raise ProviderError(
+            "invalid_output",
+            "The model provider returned an unexpected payload.",
+            sent=True,
+            confirmed=False,
+        )
     return payload
 
 
@@ -54,7 +96,17 @@ def parse_json_object(text: str) -> dict[str, Any]:
     try:
         value = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ProviderError("invalid_output", "The model output was not valid JSON.") from exc
+        raise ProviderError(
+            "invalid_output",
+            "The model output was not valid JSON.",
+            sent=True,
+            confirmed=True,
+        ) from exc
     if not isinstance(value, dict):
-        raise ProviderError("invalid_output", "The model output was not a JSON object.")
+        raise ProviderError(
+            "invalid_output",
+            "The model output was not a JSON object.",
+            sent=True,
+            confirmed=True,
+        )
     return value

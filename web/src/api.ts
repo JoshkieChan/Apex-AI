@@ -1,0 +1,109 @@
+export type InputPart =
+  | { kind: "text"; text: string }
+  | { kind: "image"; mediaId: string }
+  | { kind: "audio"; mediaId: string };
+
+export interface InteractionRequest {
+  conversationId?: string;
+  idempotencyKey?: string;
+  outputAudio?: boolean;
+  parts: InputPart[];
+}
+
+export interface InteractionPart {
+  kind: string;
+  text?: string;
+  media_id?: string;
+  provenance?: string;
+  trust?: string;
+}
+
+export interface InteractionResponse {
+  id: string;
+  conversation_id: string;
+  parts: InteractionPart[];
+  speech_error?: string | null;
+  provider?: string;
+  model?: string;
+}
+
+export function interactionBody(request: InteractionRequest): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    output_modalities: request.outputAudio ? ["text", "audio"] : ["text"],
+    parts: request.parts.map((part) => {
+      if (part.kind === "text") {
+        return { kind: "text", text: part.text };
+      }
+      return { kind: part.kind, media_id: part.mediaId };
+    }),
+  };
+  if (request.conversationId) {
+    body.conversation_id = request.conversationId;
+  }
+  if (request.idempotencyKey) {
+    body.idempotency_key = request.idempotencyKey;
+  }
+  return body;
+}
+
+export function claimSubmit(inflight: { current: boolean }): boolean {
+  if (inflight.current) {
+    return false;
+  }
+  inflight.current = true;
+  return true;
+}
+
+export function responseText(response: InteractionResponse): {
+  transcript: string;
+  answer: string;
+  audioId: string;
+  speechError: string;
+} {
+  const transcript = response.parts.find((part) => part.kind === "transcript")?.text ?? "";
+  const answer = response.parts.find((part) => part.kind === "text")?.text ?? "";
+  const audioId = response.parts.find((part) => part.kind === "audio")?.media_id ?? "";
+  return {
+    transcript,
+    answer,
+    audioId,
+    speechError: response.speech_error ?? "",
+  };
+}
+
+export interface ConversationTurn {
+  role: "user" | "assistant";
+  text: string;
+}
+
+export interface StoredInteraction {
+  request_text?: string | null;
+  parts?: InteractionPart[];
+}
+
+export function turnsFromConversation(interactions: StoredInteraction[]): ConversationTurn[] {
+  const turns: ConversationTurn[] = [];
+  for (const interaction of interactions) {
+    if (interaction.request_text) {
+      turns.push({ role: "user", text: interaction.request_text });
+    }
+    const answer = interaction.parts?.find((part) => part.kind === "text")?.text;
+    if (answer) {
+      turns.push({ role: "assistant", text: answer });
+    }
+  }
+  return turns;
+}
+
+export function keepConversation(current: string, failed: boolean): string {
+  return failed ? current : current;
+}
+
+export async function readError(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: string; message?: string };
+    return body.message || body.error || `Request failed (${response.status})`;
+  } catch {
+    return `Request failed (${response.status})`;
+  }
+}

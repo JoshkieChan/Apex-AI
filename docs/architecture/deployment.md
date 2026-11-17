@@ -30,7 +30,7 @@ The image default command is the API, as `nobody`, with `APEX_ENVIRONMENT=produc
 ## What starts
 
 1. PostgreSQL becomes ready.
-2. `migrate` upgrades an empty or older database to `0006_reliability` and exits.
+2. `migrate` upgrades an empty or older database to `0007_interaction` and exits.
 3. The API and the worker start. Neither waits for the other.
 4. The API serves `/health` when it can query the database. `/ready` stays 503 until authentication is configured and the schema revision matches.
 5. The worker listens on `APEX_WORKER_HEALTH_PORT` inside the container (8001). That port is not published on the host. `/live` means the process is up. `/health` is 200 only when the phase is `operational`, the process is not shutting down, and the last successful poll is newer than three poll intervals (at least one second). A stuck poll becomes `degraded` and returns 503. `starting` and `shutting_down` return 503. The body separates tasks handled, goals claimed, confirmed successes, recovery failures, poll failures, uncertain recoveries, and deferred recoveries. A claim is not a success. A database poll failure increments `poll_failures` and does not increment `recovery_failures`. A completed poll does not mean a recovery succeeded.
@@ -54,6 +54,8 @@ The API and the worker read `APEX_` settings. Lease duration, recovery limits, a
 `APEX_WORKER_INTERVAL_SECONDS` is the pause between polls. `APEX_WORKER_SHUTDOWN_SECONDS` is the deadline after SIGTERM. The Compose `stop_grace_period` is slightly longer so Docker does not kill the process first. A pass that is still running at the deadline is abandoned. The worker does not claim that the abandoned work completed.
 
 `APEX_AUTH_PUBLIC_KEY_FILE` and `APEX_AUTH_PRIVATE_KEY_FILE` fill the PEM settings when those values are empty. A missing file raises an error that does not include the path or the key. Production still refuses a private key.
+
+Uploaded media stays on the API process. An empty `APEX_MEDIA_DIR` uses a private directory under the temporary filesystem, which `nobody` can write. The worker does not read those files. One API process is the supported topology for media. `APEX_CORS_ORIGINS` is empty unless a browser origin is configured. Production rejects `*`.
 
 ## Fresh volume
 

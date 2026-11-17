@@ -23,6 +23,9 @@ venv/
 *.sqlite
 *.sqlite3
 
+# Frontend
+node_modules/
+
 # IDE and OS
 .idea/
 .vscode/

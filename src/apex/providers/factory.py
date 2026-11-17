@@ -20,6 +20,12 @@ def build_provider(settings: Settings) -> ModelProvider:
                 api_key=settings.openai_api_key,
                 model=settings.openai_model,
                 base_url=settings.openai_base_url,
+                image_understanding=settings.openai_image_understanding,
+                transcription=settings.openai_transcription,
+                transcription_model=settings.openai_transcription_model,
+                speech=settings.openai_speech,
+                speech_model=settings.openai_speech_model,
+                max_audio_bytes=settings.media_max_bytes,
             )
         except ProviderError:
             raise
@@ -29,5 +35,6 @@ def build_provider(settings: Settings) -> ModelProvider:
             model=settings.anthropic_model,
             base_url=settings.anthropic_base_url,
             version=settings.anthropic_version,
+            image_understanding=settings.anthropic_image_understanding,
         )
     raise ProviderError("unavailable", "The configured model provider is not supported.")

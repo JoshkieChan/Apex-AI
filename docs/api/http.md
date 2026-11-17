@@ -53,6 +53,11 @@ Validation errors add `details` with `loc`, `msg`, and `type` only.
 | POST | `/v1/goals/{id}/cancel` | owner | cancel pending work. Completed executions remain |
 | GET | `/v1/goals/agents` | authenticated | role name, type, status, and autonomy |
 | POST | `/v1/goals/agents/{key}` | `capability.register` | set `active`, `disabled`, or `retired` |
+| POST | `/v1/media` | bearer | multipart field `file`. Returns media metadata. The bytes are temporary and private to the caller |
+| GET | `/v1/media/{id}` | owner | media type and size. Missing, deleted, or another principal's media is 404 |
+| GET | `/v1/media/{id}/content` | owner | the bytes and media type. There is no public URL |
+| POST | `/v1/interactions` | bearer | one text, image, or audio turn. `Idempotency-Key` may be the header or `idempotency_key`. A mismatch is 400. A completed replay returns the stored turn. An unfinished reservation is 409 `outcome_uncertain` |
+| GET | `/v1/conversations/{id}` | owner | completed turns for that conversation. Another principal's conversation is 404 |
 
 `X-Request-ID` is echoed or generated. `Idempotency-Key` may be a header or `idempotency_key` in the body. If both are set and differ, the response is 400 `idempotency_conflict`. Replays set `Idempotency-Replayed: true`.
 
@@ -80,14 +85,40 @@ Registration body:
 
 `decision` is `approved` or `rejected`. `reason` is required.
 
+## Interaction body
+
+```json
+{
+  "conversation_id": null,
+  "project_key": "demo",
+  "task_id": null,
+  "idempotency_key": "turn-1",
+  "retain_media": false,
+  "output_modalities": ["text"],
+  "parts": [
+    {"kind": "text", "text": "What is in this image?"},
+    {"kind": "image", "media_id": "00000000-0000-0000-0000-000000000000"}
+  ]
+}
+```
+
+`parts` is one to eight items. `kind` is `text`, `image`, or `audio`. Image and audio parts name media uploaded by the same principal. The body cannot set a principal. `output_modalities` may include `audio`. Text is still returned when speech is unavailable, and `speech_error` says why. A transcript part has provenance `derived`. Model text and generated audio have trust `advisory`.
+
+`retain_media` keeps input files for `APEX_MEDIA_TTL_SECONDS` only when `APEX_MEDIA_CONVERSATION_RETENTION` is also true. Otherwise the files are deleted when the turn finishes, including when the provider fails. Expired media is 409 `media_unavailable`. A conversation used with a different `project_key` is 409 `project_mismatch`. An image or audio part the configured model cannot handle is 422 `unsupported_capability`. Apex does not send that content to a different provider.
+
+PNG, JPEG, and WebP are accepted. WAV and MPEG-1 Layer III are accepted. GIF, M4A, and WebM are rejected. Limits are `APEX_MEDIA_MAX_BYTES`, `APEX_MEDIA_MAX_PIXELS`, `APEX_MEDIA_MAX_EDGE`, `APEX_MEDIA_MAX_AUDIO_SECONDS`, and `APEX_MEDIA_MAX_IMAGES`.
+
 ## Status codes
 
 - 401 missing, invalid, expired, wrong issuer, wrong audience, unknown subject, or authentication not configured
-- 400 `impersonation_rejected` when `principal_id` is in the query string
+- 400 `impersonation_rejected` when `principal_id` is in the query string. The same status is used for invalid media, an unsupported container, a file that is too large, or audio that is too long
 - 403 requester tried to self-approve, the caller cannot decide approvals, a delegation or registration is forbidden, or a goal assigns a capability the role cannot use (`role_forbidden`)
 - 404 task, goal, approval, or agent is missing, it belongs to someone else, or the development token route is unavailable
-- 409 illegal cancel, expired approval, already decided, replayed approval, schema change, the operation changed, reconciliation is leased or exhausted, or a goal replan meets uncertain work (`outcome_uncertain`)
-- 422 invalid JSON body
+- 409 illegal cancel, expired approval, already decided, replayed approval, schema change, the operation changed, reconciliation is leased or exhausted, a goal replan meets uncertain work (`outcome_uncertain`), media is expired (`media_unavailable`), or an interaction idempotency key is reused with a different body
+- 422 invalid JSON body, or a modality the configured model does not declare
+- 429 provider rate limit
+- 502 provider authentication, availability, or invalid output. Speech failure does not use this status when the text response was stored
+- 504 provider timeout
 - 503 `/ready` when auth, the database, the production schema revision, or a required secret provider is not usable
 - 500 unexpected failure with a generic message
 

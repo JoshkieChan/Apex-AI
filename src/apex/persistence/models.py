@@ -810,3 +810,85 @@ class MemoryPurge(Base):
     scope_id: Mapped[str] = mapped_column(String(128))
     revision_count: Mapped[int] = mapped_column(Integer)
     purged_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
+class Conversation(Base):
+    """A multimodal session. This is not governed memory."""
+
+    __tablename__ = "conversations"
+    __table_args__ = (Index("ix_conversations_principal", "principal_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    principal_id: Mapped[str] = mapped_column(
+        ForeignKey("principals.id", ondelete="RESTRICT", name="fk_conversations_principal")
+    )
+    project_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
+class InteractionRecord(Base):
+    """One turn. Raw media bytes are not stored in this row."""
+
+    __tablename__ = "interactions"
+    __table_args__ = (
+        UniqueConstraint(
+            "principal_id",
+            "idempotency_key",
+            name="uq_interactions_principal_idempotency",
+        ),
+        CheckConstraint(
+            "status IN ('completed', 'failed')",
+            name="ck_interactions_status",
+        ),
+        Index("ix_interactions_conversation", "conversation_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id", ondelete="RESTRICT", name="fk_interactions_conversation")
+    )
+    principal_id: Mapped[str] = mapped_column(
+        ForeignKey("principals.id", ondelete="RESTRICT", name="fk_interactions_principal")
+    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32))
+    provider: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(128))
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    response_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
+class MediaObject(Base):
+    """Metadata for a temporary file. The bytes live outside PostgreSQL."""
+
+    __tablename__ = "media_objects"
+    __table_args__ = (
+        UniqueConstraint("storage_key", name="uq_media_objects_storage_key"),
+        CheckConstraint("kind IN ('image', 'audio')", name="ck_media_objects_kind"),
+        Index("ix_media_objects_principal", "principal_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    principal_id: Mapped[str] = mapped_column(
+        ForeignKey("principals.id", ondelete="RESTRICT", name="fk_media_objects_principal")
+    )
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="RESTRICT", name="fk_media_objects_conversation"),
+        nullable=True,
+    )
+    kind: Mapped[str] = mapped_column(String(16))
+    media_type: Mapped[str] = mapped_column(String(64))
+    byte_size: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    storage_key: Mapped[str] = mapped_column(String(32))
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    provenance: Mapped[str] = mapped_column(String(32))
+    trust: Mapped[str] = mapped_column(String(32))
+    expires_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    deleted_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())

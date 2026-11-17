@@ -16,6 +16,13 @@ _SAFE_FIELDS = (
     "capability_id",
     "decision",
     "event",
+    "interaction_id",
+    "provider",
+    "model",
+    "modality",
+    "outcome",
+    "media_bytes",
+    "latency_ms",
 )
 
 

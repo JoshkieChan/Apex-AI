@@ -99,7 +99,7 @@ def main() -> None:
             assert ready.json()["status"] == "ready"
             health = client.get("/health")
             assert health.status_code == 200
-            assert health.json()["schema_revision"] == "0006_reliability"
+            assert health.json()["schema_revision"] == "0007_interaction"
     finally:
         production.state.engine.dispose()
     print("fresh-volume-ok")
@@ -110,7 +110,7 @@ def _assert_revision(url: str) -> None:
     names = set(inspect(engine).get_table_names())
     assert {"goals", "goal_verifications", "memory_purges", "context_records"} <= names
     version = engine.connect().execute(text("SELECT version_num FROM alembic_version")).scalar()
-    assert version == "0006_reliability", version
+    assert version == "0007_interaction", version
     engine.dispose()
 
 
