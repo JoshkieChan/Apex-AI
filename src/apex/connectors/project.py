@@ -35,12 +35,12 @@ def execution_project(payload: Mapping[str, object]) -> str | None:
     bound = current_project()
     raw = payload.get("project_key")
     supplied = raw if isinstance(raw, str) else None
-    if bound is not None and supplied is not None and bound != supplied:
+    if bound is None:
+        return None
+    if supplied is not None and bound != supplied:
         raise DomainError(
             "project_mismatch",
             "The connection belongs to another project.",
             dispatched=False,
         )
-    if supplied is not None:
-        return supplied
     return bound
