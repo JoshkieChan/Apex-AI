@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -45,6 +46,21 @@ class Settings(BaseSettings):
         copied = dict(data)
         copied["database_url"] = assembled
         return copied
+
+    @model_validator(mode="after")
+    def _host_wins_over_environment_url(self) -> Settings:
+        """Use the encoded host URL when the environment also sets a raw URL.
+
+        A database_url passed to the constructor still wins. Alembic uses the
+        same host precedence, so migrations and the process open one database.
+        """
+        assembled = assemble_database_url()
+        if assembled is None:
+            return self
+        env_url = os.environ.get("APEX_DATABASE_URL")
+        if env_url and self.database_url == env_url:
+            self.database_url = assembled
+        return self
 
     dev_auth_enabled: bool = False
     seed_dev_principals: bool = False
