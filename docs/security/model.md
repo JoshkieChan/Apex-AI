@@ -52,7 +52,7 @@ Discovery does not register or enable a tool. The in-process fixture and an expl
 
 ## Execution hold
 
-`POST /v1/operations/execution` with `operations.suspend` locks and sets `runtime_controls`. The execution engine takes the same row lock before inserting a new attempt. A completed execution is returned as-is. An uncertain attempt still raises `outcome_uncertain` and is not replayed. An in-flight `running` attempt yields instead of being failed by the hold. A task that fails while the hold is on stays failed after the hold is lifted. The permission cannot be delegated. Responses and logs for the change record the actor and the outcome, not a payload.
+`POST /v1/operations/execution` with `operations.suspend` locks and sets `runtime_controls`. The execution engine takes the same row lock before inserting a new attempt and reads the locked row again, so a session that already loaded the open gate cannot dispatch after the hold commits. A completed execution is returned as-is. An uncertain attempt still raises `outcome_uncertain` and is not replayed. An in-flight `running` attempt yields instead of being failed by the hold. A task that fails while the hold is on stays failed after the hold is lifted. The permission cannot be delegated. Responses and logs for the change record the actor and the outcome, not a payload.
 
 ## Errors and logs
 

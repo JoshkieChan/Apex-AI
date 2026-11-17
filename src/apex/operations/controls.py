@@ -70,6 +70,7 @@ def _locked_gate(session: Session) -> RuntimeControl:
             select(RuntimeControl)
             .where(RuntimeControl.control_key == EXECUTION_SUSPENDED)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         if row is None:
             raise RuntimeError("The execution hold row was not locked.")
@@ -84,4 +85,6 @@ def _locked_gate(session: Session) -> RuntimeControl:
         )
         session.add(row)
         session.flush()
+        return row
+    session.refresh(row)
     return row
