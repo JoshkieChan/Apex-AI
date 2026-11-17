@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Literal
 
@@ -10,6 +11,8 @@ from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from apex.persistence.dsn import assemble_database_url
+
+_explicit_database_url: ContextVar[bool] = ContextVar("apex_explicit_database_url", default=False)
 
 
 class Settings(BaseSettings):
@@ -25,6 +28,13 @@ class Settings(BaseSettings):
         extra="ignore",
         populate_by_name=True,
     )
+
+    def __init__(self, **values: Any) -> None:
+        token = _explicit_database_url.set("database_url" in values)
+        try:
+            super().__init__(**values)
+        finally:
+            _explicit_database_url.reset(token)
 
     environment: Literal["development", "test", "production"] = "development"
     database_url: str = "sqlite+pysqlite:///:memory:"
@@ -49,16 +59,19 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _host_wins_over_environment_url(self) -> Settings:
-        """Use the encoded host URL when the environment also sets a raw URL.
+        """Use the encoded host URL when the process did not pass one.
 
-        A database_url passed to the constructor still wins. Alembic uses the
-        same host precedence, so migrations and the process open one database.
+        A database_url argument wins even when it equals ``APEX_DATABASE_URL``.
+        Incomplete host settings are not read in that case, so they cannot
+        reject an explicit URL. Alembic uses the same host precedence.
         """
-        assembled = assemble_database_url()
-        if assembled is None:
+        if _explicit_database_url.get():
             return self
         env_url = os.environ.get("APEX_DATABASE_URL")
-        if env_url and self.database_url == env_url:
+        if not env_url or self.database_url != env_url:
+            return self
+        assembled = assemble_database_url()
+        if assembled is not None:
             self.database_url = assembled
         return self
 
