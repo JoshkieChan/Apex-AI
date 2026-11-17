@@ -13,6 +13,7 @@ from apex import __version__
 from apex.api.deps import authenticator_for, get_session
 from apex.contracts.schemas import HealthResponse
 from apex.errors import DomainError
+from apex.operations.controls import execution_suspended
 from apex.persistence.models import Execution, Goal
 from apex.persistence.schema import SCHEMA_REVISION, schema_compatible
 from apex.secrets import build_secret_provider
@@ -42,6 +43,7 @@ def health(request: Request, session: Session = Depends(get_session)) -> HealthR
         leased_goals=int(diagnostics.get("leased_goals", 0)),
         uncertain_operations=int(diagnostics.get("uncertain_operations", 0)),
         awaiting_approval=int(diagnostics.get("awaiting_approval", 0)),
+        execution_suspended=_suspended(session) if database == "ok" else False,
     )
 
 
@@ -100,6 +102,14 @@ def _diagnostics(request: Request, session: Session) -> dict[str, int]:
         "uncertain_operations": int(uncertain or 0),
         "awaiting_approval": int(waiting or 0),
     }
+
+
+def _suspended(session: Session) -> bool:
+    try:
+        return execution_suspended(session)
+    except Exception:
+        session.rollback()
+        return False
 
 
 def _provider_name(request: Request) -> str:

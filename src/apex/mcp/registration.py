@@ -33,6 +33,7 @@ _CONTROL = {
     "authority.grant",
     "capability.register",
     "operations.reconcile",
+    "operations.suspend",
 }
 
 

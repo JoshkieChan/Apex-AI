@@ -144,7 +144,7 @@ def test_production_rejects_the_development_header_and_is_not_ready(engine: Engi
             text("CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) NOT NULL)")
         )
         db.execute(text("DELETE FROM alembic_version"))
-        db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('0008_connectors')"))
+        db.execute(text("INSERT INTO alembic_version (version_num) VALUES ('0009_controls')"))
         db.commit()
     with TestClient(secured) as live:
         assert live.get("/ready").status_code == 200

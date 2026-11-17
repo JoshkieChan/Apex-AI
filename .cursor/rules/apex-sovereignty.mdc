@@ -3,4 +3,4 @@ description: Read Apex sovereignty and the agent execution contract before chang
 alwaysApply: true
 ---
 
-Read `docs/architecture/apex-sovereignty.md`, `docs/engineering/agent-execution-contract.md`, `docs/status.md`, and the relevant files in `docs/decisions/` before changing Apex. Follow `AGENTS.md`. The current schema revision is `0008_connectors`.
+Read `docs/architecture/apex-sovereignty.md`, `docs/engineering/agent-execution-contract.md`, `docs/status.md`, and the relevant files in `docs/decisions/` before changing Apex. Follow `AGENTS.md`. The current schema revision is `0009_controls`.

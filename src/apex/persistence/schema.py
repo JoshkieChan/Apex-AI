@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from apex.config import Settings
 
-SCHEMA_REVISION = "0008_connectors"
+SCHEMA_REVISION = "0009_controls"
 
 
 def schema_compatible(session: Session, settings: Settings) -> bool:

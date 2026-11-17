@@ -366,3 +366,4 @@ class HealthResponse(ModelConfig):
     leased_goals: int = 0
     uncertain_operations: int = 0
     awaiting_approval: int = 0
+    execution_suspended: bool = False

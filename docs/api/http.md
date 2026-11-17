@@ -14,8 +14,10 @@ Validation errors add `details` with `loc`, `msg`, and `type` only.
 
 | Method | Path | Auth | Result |
 | --- | --- | --- | --- |
-| GET | `/health`, `/v1/health` | no | liveness plus `schema_revision`, `secret_provider`, recoverable goals, leased goals, uncertain operations, and approvals waiting. Liveness stays 200 when those counts cannot be collected |
+| GET | `/health`, `/v1/health` | no | liveness plus `schema_revision`, `secret_provider`, recoverable goals, leased goals, uncertain operations, approvals waiting, and `execution_suspended`. Liveness stays 200 when those counts cannot be collected |
 | GET | `/ready` | no | 200 when the database is up, bearer auth is active, production schema revision matches, and a required secret provider is usable; otherwise 503 |
+| GET | `/v1/operations/execution` | `operations.suspend` | whether new capability execution is held |
+| POST | `/v1/operations/execution` | `operations.suspend` | set `{"suspended": true}` or `false`. Uncertain and completed rows are not rewritten |
 | GET | `/v1/principal` | bearer | authenticated principal id and subject |
 | POST | `/v1/dev/tokens` | local bootstrap | development token for a seeded subject; 404 unless issuance is enabled, the peer is local, and the bootstrap header matches |
 | POST | `/v1/tasks` | bearer | 201 new task, or 200 when the idempotency key is replayed |
