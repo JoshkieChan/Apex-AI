@@ -892,3 +892,133 @@ class MediaObject(Base):
     expires_at: Mapped[datetime] = mapped_column(UtcDateTime())
     deleted_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
+class Connection(Base):
+    """An external system Apex has recorded. Credentials are references only."""
+
+    __tablename__ = "connections"
+    __table_args__ = (
+        UniqueConstraint("connection_key", name="uq_connections_connection_key"),
+        CheckConstraint(
+            "kind IN ('mcp', 'api', 'device')",
+            name="ck_connections_kind",
+        ),
+        CheckConstraint(
+            "state IN ("
+            "'pending_configuration', 'pending_authorization', 'active', "
+            "'degraded', 'disabled', 'revoked', 'failed')",
+            name="ck_connections_state",
+        ),
+        CheckConstraint(
+            "trust IN ('untrusted', 'reviewed')",
+            name="ck_connections_trust",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    connection_key: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))
+    display_name: Mapped[str] = mapped_column(String(256))
+    owner_principal_id: Mapped[str] = mapped_column(
+        ForeignKey("principals.id", ondelete="RESTRICT", name="fk_connections_owner")
+    )
+    project_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_identity: Mapped[str] = mapped_column(String(256), default="")
+    endpoint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auth_method: Mapped[str] = mapped_column(String(32), default="none")
+    secret_ref: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    scopes: Mapped[list[str]] = mapped_column(JSON)
+    trust: Mapped[str] = mapped_column(String(32), default="untrusted")
+    state: Mapped[str] = mapped_column(String(32))
+    mcp_server_id: Mapped[str | None] = mapped_column(
+        ForeignKey("mcp_servers.id", ondelete="RESTRICT", name="fk_connections_mcp_server"),
+        nullable=True,
+    )
+    capability_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    expires_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
+    last_health_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
+class ConnectionOperation(Base):
+    """A discovered connector operation. It is not executable until Apex accepts it."""
+
+    __tablename__ = "connection_operations"
+    __table_args__ = (
+        UniqueConstraint(
+            "connection_id",
+            "operation_key",
+            name="uq_connection_operations_connection_operation",
+        ),
+        UniqueConstraint("capability_id", name="uq_connection_operations_capability"),
+        CheckConstraint(
+            "registration_state IN ("
+            "'discovered', 'registered', 'disabled', 'revoked', 'schema_changed')",
+            name="ck_connection_operations_state",
+        ),
+        CheckConstraint(
+            "side_effect IN ('read', 'idempotent_write', 'non_idempotent_write')",
+            name="ck_connection_operations_side_effect",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey(
+            "connections.id",
+            ondelete="RESTRICT",
+            name="fk_connection_operations_connection",
+        )
+    )
+    operation_key: Mapped[str] = mapped_column(String(64))
+    capability_id: Mapped[str] = mapped_column(String(256))
+    description: Mapped[str] = mapped_column(Text, default="")
+    input_schema: Mapped[dict[str, Any]] = mapped_column(JSON)
+    output_schema: Mapped[dict[str, Any]] = mapped_column(JSON)
+    schema_hash: Mapped[str] = mapped_column(String(64))
+    version: Mapped[str] = mapped_column(String(32), default="0")
+    risk: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    permission_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    side_effect: Mapped[str] = mapped_column(String(32))
+    registration_state: Mapped[str] = mapped_column(String(32), default="discovered")
+    available: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime())
+
+
+class DeviceRecord(Base):
+    """A paired device. Pairing is not a permission and not a principal."""
+
+    __tablename__ = "devices"
+    __table_args__ = (
+        UniqueConstraint("device_key", name="uq_devices_device_key"),
+        UniqueConstraint("connection_id", name="uq_devices_connection"),
+        CheckConstraint(
+            "pairing_state IN ('unpaired', 'paired', 'revoked')",
+            name="ck_devices_pairing_state",
+        ),
+        CheckConstraint(
+            "health IN ('unknown', 'ok', 'unavailable')",
+            name="ck_devices_health",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    device_key: Mapped[str] = mapped_column(String(64))
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("connections.id", ondelete="RESTRICT", name="fk_devices_connection")
+    )
+    device_type: Mapped[str] = mapped_column(String(64))
+    owner_principal_id: Mapped[str] = mapped_column(
+        ForeignKey("principals.id", ondelete="RESTRICT", name="fk_devices_owner")
+    )
+    pairing_state: Mapped[str] = mapped_column(String(32), default="unpaired")
+    pairing_code_hash: Mapped[str] = mapped_column(String(64))
+    protocol_version: Mapped[str] = mapped_column(String(32), default="1")
+    health: Mapped[str] = mapped_column(String(32), default="unknown")
+    last_seen_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UtcDateTime())
+    updated_at: Mapped[datetime] = mapped_column(UtcDateTime())

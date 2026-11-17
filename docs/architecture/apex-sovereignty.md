@@ -37,6 +37,8 @@ PNG, JPEG, and WebP can be attached. WAV and MPEG-1 Layer III can be transcribed
 
 The first-party client in `web/` talks to the same `/v1` API. It does not receive provider credentials.
 
+Connections are records of external systems. The MCP fixture, the reference inventory, and the reference device run through the existing execution engine. A connection is not a principal. Discovery does not install a capability, and a model response cannot register one.
+
 ## Constraints
 
 - The mock echo is a fixture. It does not measure image or audio understanding.

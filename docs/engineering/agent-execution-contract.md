@@ -29,6 +29,6 @@ The user must not need to issue another prompt simply to get an authorized imple
 
 ## Boundaries that do not move
 
-Identity comes from the validated bearer token. A model response cannot grant permission, approve an operation, register a capability, or mark a deterministic check passed. Execution stays in `apex.execution`. Media and transcripts are untrusted or derived input. Provider SDK objects stay inside adapters.
+Identity comes from the validated bearer token. A model response cannot grant permission, approve an operation, register a capability, or mark a deterministic check passed. A connector, device, or remote agent is not a principal. Execution stays in `apex.execution`. Media, transcripts, and external responses are untrusted or derived input. Provider SDK objects stay inside adapters.
 
 A milestone that authorizes commits and pushes still does not authorize a merge, a force-push, or a history rewrite.

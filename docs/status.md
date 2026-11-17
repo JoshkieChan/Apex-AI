@@ -23,9 +23,10 @@ This file describes the code in the repository. It is not a roadmap disguised as
 - Independent verification of fixture reads and writes against the in-memory store.
 - Deterministic intent for the original utterances plus the two fixture utterances.
 - Mock provider plus optional OpenAI and Anthropic adapters behind one interface.
-- Alembic revisions `0001_initial` through `0007_interaction`.
+- Alembic revisions `0001_initial` through `0008_connectors`.
 - One-shot migration command `python -m apex.persistence.migrate`. API processes do not migrate on startup.
-- Production `/ready` requires the Alembic revision `0007_interaction`, an active authenticator, and a usable secret provider when an external provider is required.
+- Production `/ready` requires the Alembic revision `0008_connectors`, an active authenticator, and a usable secret provider when an external provider is required.
+- Governed connections for the in-process MCP fixture, a reference inventory API, and a reference device. Discovery does not activate an operation. Execution still goes through `ExecutionEngine`. A2A is not implemented.
 - One interaction runtime for text, images, and uploaded or recorded audio. `POST /v1/interactions` normalizes those inputs, calls the configured model, and returns text plus an optional transcript and generated audio. Conversations are not governed memory. Raw media bytes stay in temporary files, not PostgreSQL. Image understanding, transcription, and speech are off unless the configured model is explicitly enabled. The mock provider is the deterministic fixture. Live OpenAI and Anthropic perception was not called.
 - Task events, executions, verifications, and one trusted task-scoped context record after a passed verification.
 - Governed memory with personal, project, task, and system scope. Versions, provenance, reliability, logical deletion, physical purge of expired deletions, deterministic retrieval, and a context budget. Model proposals stay inferred candidates. Memory does not grant authority. Purge tombstones do not store content. Derived context redaction, operational audit retention, and backup retention are separate and are documented in `docs/security/data-lifecycle.md`.
@@ -70,6 +71,27 @@ The implementation commit is `c0bcefdde6e61c799a32bf96a41975aefef6c4f9` on `m6-m
 Pull request https://github.com/JoshkieChan/Apex-AI/pull/2 is open from `m6-multimodal` into `master` and has not been merged. Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 remains open from `master` into `main` and has not been merged.
 
 A later pass keeps a pre-dispatch failure from sticking in `reserved`. The provider call is marked `dispatched` only when it is handed off. A context-assembly failure can be retried with the same key. A provider error that may already have been sent stays `outcome_uncertain` and is not sent again. One key and one payload produce one provider call. A different payload is `idempotency_conflict`. Completed turns include the user text and the assistant text, in that order, and another principal cannot read the conversation. The web client keeps the conversation id and reads it back. Conversation text is not governed memory. Local pytest on disposable database `apex_m6_suite` exited 0 with the rendered Compose test skipped in the image that has no Docker CLI. mypy reported no issues in 105 source files. The deployment probe printed `deployment-ok` with a password containing reserved URL characters. A received invalid model response is a confirmed failure and is not sent again. A connect or pool timeout before the request leaves is not sent, so the same key can retry and its request media stays in place. The web client sends one idempotency key and ignores a second submit while that turn is in flight. Vitest passed 6 tests, `tsc --noEmit` passed, and the Vite production build passed. Browser recording was not executed. Live OpenAI and Anthropic were not called. The development database remained `0009_controls`.
+
+## M7 connectors
+
+M7 records external systems as connections. The MCP fixture, the reference inventory, and the reference device are the working paths. A registrar accepts each operation. The caller still needs a grant, and a high-risk note still needs a different principal's approval. Connection scopes, project, expiry, and revocation are checked before the fixture changes. A payload project key cannot supply a missing task project, and a different payload project is `project_mismatch`. Schema drift disables the capability. The reference note is non-idempotent: a lost response after the write stays uncertain. The multi-system goal reads the inventory item and then sets the reference device label. Verification reads those stores. A2A is documented in `docs/decisions/0016-a2a-boundary.md` and is not implemented. OAuth is not implemented. No live third-party account was called.
+
+Schema revision is `0008_connectors`. Accepted connector operations are stored in PostgreSQL. The API and the worker install those operations from the database, and the worker does so again on each poll. Risk and permission come from the Apex catalog, not from the client. A server key is not reused across owners. Health evidence cannot reactivate a disconnected, disabled, or revoked connection. The device owner can rotate a lost pairing code; only the hash is stored. The deployment probe registers the reference inventory and device through the API, restarts the worker, and the worker executes and verifies the coordinated goal. A second worker restart still executes it. Revoking the connections prevents a deferred goal from completing. The probe printed `connector-worker` and `deployment-ok`. The development database remained `0009_controls`.
+
+Local verification ran in `python:3.12-slim` against a local copy of this tree. PostgreSQL 16 for pytest was Compose service `docker-postgres-1`. The run upgraded that database to `0008_connectors`.
+
+- `ruff check .` — all checks passed
+- `ruff format --check .` — 192 files already formatted
+- `mypy` — no issues in 112 source files
+- `pytest` with `APEX_POSTGRES_TEST_URL` set — 181 passed, 1 skipped, 0 failed
+
+The skipped test is `test_rendered_deploy_compose_requires_a_password_and_binds_loopback`, because that image has no Docker CLI. `python -m tests.integration.deployment_probe` then ran with Docker Compose 2.26.1 and the host daemon. It printed `deployment-ok` and exited 0. The probe used project `apex-m52` and volumes `apex_m52_disposable` and `apex_m52_keys`. It included the schema round trip to `0008_connectors`, a goal completed without `/run`, API and worker restarts, approval preservation, database outage, the production image, and a graceful worker stop. After cleanup, `docker-postgres-1` was still running, volume `docker_apex_pg_data` was still present, and its `alembic_version` was `0008_connectors`.
+
+No connector management interface was added, so the web client was not rebuilt for this change.
+
+The implementation commit is `c96afec0fb8371efcff2e9a943e47c01e1b1865f` on `m7-connectors`. That commit was pushed to `origin/m7-connectors`. GitHub Actions run `42735312091` (push) and run `42735376937` (pull request) both completed with success for that commit. Quality, deployment, and frontend succeeded in each run. Those runs are https://github.com/JoshkieChan/Apex-AI/actions/runs/42735312091 and https://github.com/JoshkieChan/Apex-AI/actions/runs/42735376937.
+
+Pull request https://github.com/JoshkieChan/Apex-AI/pull/3 is open from `m7-connectors` into `m6-multimodal` and has not been merged. Pull request https://github.com/JoshkieChan/Apex-AI/pull/2 remains open from `m6-multimodal` into `master` and has not been merged. Pull request https://github.com/JoshkieChan/Apex-AI/pull/1 remains open from `master` into `main` and has not been merged.
 
 ## Deferred
 

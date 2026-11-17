@@ -90,6 +90,7 @@ class McpRegistrationService:
         transport: str = "inprocess",
         endpoint: str | None = None,
         credential_ref: str | None = None,
+        connection_key: str | None = None,
     ) -> McpServerRecord:
         if server_key == "fixture":
             if transport != "inprocess" or endpoint or credential_ref:
@@ -111,14 +112,36 @@ class McpRegistrationService:
             )
             if credential_ref:
                 validate_secret_reference(credential_ref)
-        existing = self._session.scalar(
-            select(McpServerRecord).where(McpServerRecord.server_key == server_key)
-        )
-        if existing is not None:
-            return existing
+        if connection_key:
+            bound = f"{owner_id}-{connection_key}"
+            owned_bound = self._session.scalar(
+                select(McpServerRecord).where(
+                    McpServerRecord.server_key == bound,
+                    McpServerRecord.owner_principal_id == owner_id,
+                )
+            )
+            if owned_bound is not None:
+                return owned_bound
+            taken = self._session.scalar(
+                select(McpServerRecord).where(McpServerRecord.server_key == server_key)
+            )
+            stored_key = server_key if taken is None else bound
+        else:
+            existing = self._session.scalar(
+                select(McpServerRecord).where(
+                    McpServerRecord.server_key.in_((server_key, f"{owner_id}:{server_key}")),
+                    McpServerRecord.owner_principal_id == owner_id,
+                )
+            )
+            if existing is not None:
+                return existing
+            taken = self._session.scalar(
+                select(McpServerRecord).where(McpServerRecord.server_key == server_key)
+            )
+            stored_key = server_key if taken is None else f"{owner_id}:{server_key}"
         record = McpServerRecord(
             id=new_id(),
-            server_key=server_key,
+            server_key=stored_key,
             display_name=display_name,
             description="Registered MCP server. Credentials are stored only as references.",
             transport="inprocess" if server_key == "fixture" else "http",
@@ -209,16 +232,23 @@ class McpRegistrationService:
         verification_kind: str,
         now: datetime,
     ) -> McpToolRecord:
-        if risk not in {RiskLevel.low.value, RiskLevel.medium.value, RiskLevel.high.value}:
-            raise DomainError("invalid_registration", "Risk must be assigned by Apex.")
-        if not _PERMISSION.fullmatch(permission_key) or permission_key in _CONTROL:
-            raise DomainError("invalid_registration", "The permission key is not acceptable.")
         tool = self._session.get(McpToolRecord, tool_id)
         if tool is None or tool.registration_state == "revoked":
             raise DomainError("tool_not_found", "The discovered tool is not available to register.")
         server = self._session.get(McpServerRecord, tool.server_id)
         if server is None or server.trust_status != "reviewed":
             raise DomainError("server_unreviewed", "The MCP server has not been reviewed.")
+        from apex.connectors.catalog import mcp_policy
+
+        policy = mcp_policy(tool.tool_name)
+        if risk != policy.risk or permission_key != policy.permission_key:
+            raise DomainError(
+                "invalid_registration",
+                "Risk and permission are assigned by Apex.",
+            )
+        risk = policy.risk
+        permission_key = policy.permission_key
+        verification_kind = policy.verification_kind
         version = "1" if tool.version == "0" else str(int(tool.version) + 1)
         self._install(tool, server, risk, permission_key, verification_kind, version)
         tool.risk = risk
@@ -271,6 +301,20 @@ class McpRegistrationService:
         self._session.flush()
         return tool
 
+    def install_registered(self, tool: McpToolRecord, server: McpServerRecord) -> None:
+        """Install one persisted tool using the Apex catalog, not the stored risk."""
+        from apex.connectors.catalog import mcp_policy
+
+        policy = mcp_policy(tool.tool_name)
+        self._install(
+            tool,
+            server,
+            policy.risk,
+            policy.permission_key,
+            policy.verification_kind,
+            tool.version,
+        )
+
     def _install(
         self,
         tool: McpToolRecord,
@@ -304,7 +348,7 @@ class McpRegistrationService:
             risk=RiskLevel(risk),
             input_model=model_in,
             output_model=model_out,
-            adapter=_adapter(server, tool.tool_name, self._settings),
+            adapter=_adapter(server, tool.tool_name, self._settings, permission_key),
             verification_kind=verification_kind,
             timeout_seconds=2.0,
             max_attempts=attempts,
@@ -324,6 +368,7 @@ class McpRegistrationService:
                 if server.transport == "inprocess" and tool.tool_name == "records_update"
                 else "none"
             ),
+            owner_principal_id=server.owner_principal_id,
         )
         self._registry.replace(spec)
 
@@ -354,12 +399,20 @@ def _adapter(
     server: McpServerRecord,
     tool_name: str,
     settings: Settings | None,
+    permission_key: str,
 ) -> Callable[[Mapping[str, object], float], dict[str, object]]:
     transport = server.transport
     endpoint = server.endpoint or ""
     credential_ref = server.credential_ref
+    server_id = server.id
 
     def run(payload: Mapping[str, object], timeout_seconds: float) -> dict[str, object]:
+        from datetime import UTC, datetime
+
+        from apex.connectors.gates import enforce
+        from apex.connectors.project import execution_project
+
+        enforce(server_id, permission_key, execution_project(payload), datetime.now(UTC))
         arguments = {str(key): value for key, value in payload.items()}
         if transport == "inprocess":
             return cast(

@@ -23,6 +23,8 @@ _SAFE_FIELDS = (
     "outcome",
     "media_bytes",
     "latency_ms",
+    "connection_id",
+    "connection_state",
 )
 
 

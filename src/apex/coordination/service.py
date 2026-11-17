@@ -461,12 +461,24 @@ class CoordinationService:
     def ensure_agents(self) -> None:
         """Insert built-in roles that are missing. Do not reactivate a disabled role."""
         now = self._clock.now()
-        existing = set(self._session.scalars(select(LogicalAgent.agent_key)).all())
+        stored = {row.agent_key: row for row in self._session.scalars(select(LogicalAgent)).all()}
         for row in agent_rows(now):
             key = str(row["agent_key"])
-            if key in existing:
+            current = stored.get(key)
+            if current is None:
+                self._session.add(LogicalAgent(id=new_id(), **row))
                 continue
-            self._session.add(LogicalAgent(id=new_id(), **row))
+            if current.status != "active":
+                continue
+            raw_permissions = row["allowed_permissions"]
+            wanted = (
+                [str(item) for item in raw_permissions] if isinstance(raw_permissions, list) else []
+            )
+            have = [str(item) for item in (current.allowed_permissions or [])]
+            merged = list(dict.fromkeys([*have, *[item for item in wanted if item not in have]]))
+            if merged != have:
+                current.allowed_permissions = merged
+                current.updated_at = now
         self._session.flush()
 
     def _run_one(self, goal: Goal, task: Task, actor: Principal, subtask: GoalSubtask) -> bool:

@@ -65,6 +65,10 @@ When the value is positive, the worker deletes `context_records` whose `trust` i
 
 Those rows are how an operator checks who approved an operation, what was executed, and which uncertain outcome is still unresolved. Deleting them would make the authority record weaker. A proposal tied to unresolved work stays until that work is terminal. An old proposal with no such association, including one whose work has reached a terminal state, can expire. Running expiry again removes nothing further. Proposal expiry does not run for a row that is an approval, an execution, or a goal, because those are not context proposals.
 
+## Connections
+
+Connection rows store an endpoint, a secret reference, scopes, and state. They do not store secret values or pairing codes. The pairing code is returned once and only its hash is kept. Revocation sets state and disables capabilities. It does not delete the connection, device, execution, or approval rows. The reference inventory and device are process memory. They are not governed memory and they are not included in a provider request. This does not erase a remote MCP server's logs.
+
 ## Temporary media
 
 Raw image and audio bytes are files, not database columns and not governed memory. The default lifetime is the request. `APEX_MEDIA_CONVERSATION_RETENTION` must be true and the turn must set `retain_media` before a file is kept for the conversation. Kept files expire after `APEX_MEDIA_TTL_SECONDS` (default 3600, maximum 86400). Deletion sets `deleted_at` and removes the file. A later reference is `media_unavailable` or `not_found`.

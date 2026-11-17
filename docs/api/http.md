@@ -30,6 +30,17 @@ Validation errors add `details` with `loc`, `msg`, and `type` only.
 | POST | `/v1/mcp/tools/{id}/register` | registrar | assign risk, permission, and verification kind |
 | POST | `/v1/mcp/tools/{id}/disable` | registrar | disable a registered tool |
 | POST | `/v1/mcp/tools/{id}/revoke` | registrar | revoke the tool and the server trust status |
+| POST | `/v1/connections` | registrar | record an MCP, reference API, or reference device connection |
+| GET | `/v1/connections/{id}` | owner | connection metadata; no secret and no pairing code |
+| POST | `/v1/connections/{id}/authorize` | registrar | set connection scopes; this does not grant the caller a permission |
+| POST | `/v1/connections/{id}/discover` | registrar | list operations; they stay unavailable |
+| POST | `/v1/connections/{id}/operations/{id}/accept` | registrar | accept one catalog operation |
+| POST | `/v1/connections/{id}/disable` | registrar | disable the connection |
+| POST | `/v1/connections/{id}/revoke` | registrar | revoke the connection without deleting audit rows |
+| POST | `/v1/connections/{id}/disconnect` | registrar | mark the connection degraded |
+| POST | `/v1/connections/{id}/health` | registrar | refresh health |
+| POST | `/v1/devices/{id}/pair` | registrar | pair with the one-time code |
+| GET | `/v1/devices/{id}` | owner | device metadata |
 | POST | `/v1/delegations` | bearer | one-hop delegation the caller already holds |
 | POST | `/v1/grants/revoke` | grant administrator | set a grant to deny and stamp `revoked_at` |
 | GET | `/v1/executions/{id}/reconciliation` | owner with `operations.reconcile` | certainty and the latest evidence |

@@ -12,6 +12,8 @@ from tests.support_auth import AUDIENCE, ISSUER, PRIVATE_PEM, PUBLIC_PEM, bearer
 
 from apex.api.app import create_app
 from apex.config import Settings
+from apex.connectors.gates import reset_gates
+from apex.connectors.reference import reset_reference
 from apex.mcp.fixture import reset_fixture
 from apex.persistence.base import Base
 from apex.persistence.session import create_db_engine, create_session_factory
@@ -72,8 +74,12 @@ def client(settings: Settings, engine: Engine) -> Iterator[TestClient]:
 @pytest.fixture(autouse=True)
 def _fresh_fixture() -> Iterator[None]:
     reset_fixture()
+    reset_reference()
+    reset_gates()
     yield
     reset_fixture()
+    reset_reference()
+    reset_gates()
 
 
 def auth(principal: str = "dev-user", idempotency_key: str | None = None) -> dict[str, str]:

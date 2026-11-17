@@ -38,6 +38,18 @@ _EXPORT = re.compile(
     re.DOTALL,
 )
 _LOOKUP = re.compile(r"^Look up fixture record (?P<name>[A-Za-z0-9][A-Za-z0-9_-]{0,63})$")
+_INVENTORY = re.compile(
+    r"^Look up reference inventory item (?P<item>[A-Za-z0-9][A-Za-z0-9_-]{0,63})"
+    r"(?: for project (?P<project>[A-Za-z0-9_-]{1,64}))?$"
+)
+_DEVICE_LABEL = re.compile(
+    r"^Set reference device label to (?P<label>[A-Za-z0-9][A-Za-z0-9_-]{0,63})$"
+)
+_NOTE = re.compile(
+    r"^Record reference note '(?P<text>[^']{1,80})' on item "
+    r"(?P<item>[A-Za-z0-9][A-Za-z0-9_-]{0,63}) as operation "
+    r"(?P<operation>[A-Za-z0-9]{8,64})$"
+)
 _UPDATE = re.compile(
     r"^Update fixture record (?P<name>[A-Za-z0-9][A-Za-z0-9_-]{0,63}) "
     r"status to (?P<status>[A-Za-z0-9][A-Za-z0-9_-]{0,63})$"
@@ -56,8 +68,14 @@ class IntentEngine:
         self._registry = registry
         self._provider = provider
 
-    def interpret(self, text: str, *, memory: AssembledContext | None = None) -> Intent:
-        intent = _deterministic(text.strip(), self._registry)
+    def interpret(
+        self,
+        text: str,
+        *,
+        memory: AssembledContext | None = None,
+        principal_id: str | None = None,
+    ) -> Intent:
+        intent = _deterministic(text.strip(), self._registry, principal_id)
         if self._provider is None:
             return intent
         draft, dropped = self._advisory(text, memory)
@@ -109,7 +127,9 @@ class IntentEngine:
         return draft, dropped
 
 
-def _deterministic(text: str, registry: CapabilityRegistry) -> Intent:
+def _deterministic(
+    text: str, registry: CapabilityRegistry, principal_id: str | None = None
+) -> Intent:
     combined = _COMBINED.match(text)
     if combined is not None:
         body = combined.group("text")
@@ -150,6 +170,7 @@ def _deterministic(text: str, registry: CapabilityRegistry) -> Intent:
     updated = _UPDATE.match(text)
     if updated is not None:
         return _mcp_intent(
+            principal_id,
             registry,
             capability_id=UPDATE_ID,
             permission_key="records.update",
@@ -164,9 +185,53 @@ def _deterministic(text: str, registry: CapabilityRegistry) -> Intent:
                 ).hexdigest()[:32],
             },
         )
+    inventory = _INVENTORY.match(text)
+    if inventory is not None:
+        payload = {"item": inventory.group("item")}
+        if inventory.group("project"):
+            payload["project_key"] = inventory.group("project")
+        return _mcp_intent(
+            principal_id,
+            registry,
+            capability_id="api.reference.lookup",
+            permission_key="reference.lookup",
+            objective=f"Look up reference inventory item {inventory.group('item')}.",
+            risk=RiskLevel.low,
+            expected="The reference inventory item matches the stored row.",
+            payload=payload,
+        )
+    noted = _NOTE.match(text)
+    if noted is not None:
+        return _mcp_intent(
+            principal_id,
+            registry,
+            capability_id="api.reference.note",
+            permission_key="reference.note",
+            objective="Store one reference inventory note.",
+            risk=RiskLevel.high,
+            expected="The reference inventory stores the note once.",
+            payload={
+                "item": noted.group("item"),
+                "text": noted.group("text"),
+                "operation_id": noted.group("operation"),
+            },
+        )
+    labeled = _DEVICE_LABEL.match(text)
+    if labeled is not None:
+        return _mcp_intent(
+            principal_id,
+            registry,
+            capability_id="device.reference-device.configure",
+            permission_key="device.configure",
+            objective="Set the reference device label.",
+            risk=RiskLevel.medium,
+            expected="The reference device stores the requested label.",
+            payload={"device_key": "reference-device", "label": labeled.group("label")},
+        )
     looked = _LOOKUP.match(text)
     if looked is not None:
         return _mcp_intent(
+            principal_id,
             registry,
             capability_id=LOOKUP_ID,
             permission_key="records.lookup",
@@ -200,6 +265,7 @@ def _deterministic(text: str, registry: CapabilityRegistry) -> Intent:
 
 
 def _mcp_intent(
+    principal_id: str | None,
     registry: CapabilityRegistry,
     *,
     capability_id: str,
@@ -209,14 +275,14 @@ def _mcp_intent(
     expected: str,
     payload: dict[str, str],
 ) -> Intent:
-    resolved = _registered_capability(registry, capability_id, permission_key)
+    resolved = _registered_capability(registry, capability_id, permission_key, principal_id)
     if resolved is None:
         return _clarification(["That capability is not registered."])
     capability_id = resolved
     return Intent(
         objective=objective,
         required_capabilities=[capability_id],
-        constraints=["Use the registered MCP capability through the execution engine."],
+        constraints=["Use the registered capability through the execution engine."],
         risk=risk,
         expected_outcome=expected,
         inputs={capability_id: payload},
@@ -228,18 +294,29 @@ def _registered_capability(
     registry: CapabilityRegistry,
     capability_id: str,
     permission_key: str,
+    principal_id: str | None,
 ) -> str | None:
-    """Prefer the fixture id. Otherwise use the only registered capability for that permission."""
-    spec = registry.get(capability_id)
-    if spec is not None and spec.available:
-        return capability_id
-    matches = [
-        item.id
-        for item in registry.list()
-        if item.available and item.permission_key == permission_key
+    """Prefer this principal's registration when they have one.
+
+    A granted caller who owns no matching capability still uses the requested
+    id. That keeps a registrar-owned fixture available to the principal who
+    holds the grant. It does not select another owner's id for an owner who
+    has their own.
+    """
+    available = [
+        item for item in registry.list() if item.available and item.permission_key == permission_key
     ]
-    if len(matches) == 1:
-        return matches[0]
+    owned = [
+        item
+        for item in available
+        if principal_id is not None and item.owner_principal_id == principal_id
+    ]
+    pool = owned or available
+    chosen = registry.get(capability_id)
+    if chosen is not None and chosen in pool:
+        return capability_id
+    if len(pool) == 1:
+        return pool[0].id
     return None
 
 
