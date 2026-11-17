@@ -129,12 +129,27 @@ class OpenAIAdapter:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise ProviderError("invalid_output", "The transcription was not JSON.") from exc
+            raise ProviderError(
+                "invalid_output",
+                "The transcription was not JSON.",
+                sent=True,
+                confirmed=False,
+            ) from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("text"), str):
-            raise ProviderError("invalid_output", "The transcription had no text.")
+            raise ProviderError(
+                "invalid_output",
+                "The transcription had no text.",
+                sent=True,
+                confirmed=False,
+            )
         text = payload["text"].strip()
         if not text:
-            raise ProviderError("invalid_output", "The transcription was empty.")
+            raise ProviderError(
+                "invalid_output",
+                "The transcription was empty.",
+                sent=True,
+                confirmed=False,
+            )
         return text
 
     def synthesize(self, text: str, timeout: float) -> tuple[bytes, str]:

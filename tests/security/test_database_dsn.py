@@ -32,6 +32,19 @@ def test_password_reserved_characters_stay_in_the_password(monkeypatch: pytest.M
     )
 
 
+def test_host_wins_over_an_environment_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("APEX_DATABASE_URL", "postgresql+psycopg://apex:raw%40@other:5432/apex")
+    monkeypatch.setenv("APEX_POSTGRES_HOST", "postgres")
+    monkeypatch.setenv("APEX_POSTGRES_PASSWORD", "a@b")
+    monkeypatch.setenv("APEX_POSTGRES_USER", "apex")
+    monkeypatch.setenv("APEX_POSTGRES_DB", "apex")
+    settings = Settings(_env_file=None)
+    parts = urlsplit(settings.database_url)
+    assert parts.hostname == "postgres"
+    assert parts.password is not None
+    assert unquote(parts.password) == "a@b"
+
+
 def test_explicit_database_url_is_not_replaced(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APEX_DATABASE_URL", raising=False)
     monkeypatch.setenv("APEX_POSTGRES_HOST", "postgres")

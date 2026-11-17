@@ -394,6 +394,12 @@ def test_memory_failure_before_dispatch_can_be_retried(
     )
     assert retried.status_code == 200, retried.text
     assert len(provider.turns) == 1
+    stored = client.get(
+        f"/v1/conversations/{retried.json()['conversation_id']}",
+        headers=auth(),
+    )
+    assert stored.status_code == 200, stored.text
+    assert [item["request_text"] for item in stored.json()["interactions"]] == ["hello"]
 
 
 def test_sent_provider_failure_is_not_replayed(client: TestClient) -> None:
@@ -526,6 +532,147 @@ def test_history_includes_both_speakers_and_stays_with_the_owner(client: TestCli
     ]
     hidden = client.get(f"/v1/conversations/{conversation_id}", headers=auth("dev-approver"))
     assert hidden.status_code == 404
+
+
+def test_pre_dispatch_failure_keeps_media_for_the_same_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image_id = _upload(client, _png(1, 1), "keep.png")
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise DomainError("invalid_request", "The context could not be assembled.")
+
+    monkeypatch.setattr(MemoryStore, "assemble", broken)
+    failed = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={
+            "idempotency_key": "media-retry",
+            "project_key": "lab",
+            "parts": [
+                {"kind": "text", "text": "describe"},
+                {"kind": "image", "media_id": image_id},
+            ],
+        },
+    )
+    assert failed.status_code == 400
+    monkeypatch.undo()
+    retried = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={
+            "idempotency_key": "media-retry",
+            "project_key": "lab",
+            "parts": [
+                {"kind": "text", "text": "describe"},
+                {"kind": "image", "media_id": image_id},
+            ],
+        },
+    )
+    assert retried.status_code == 200, retried.text
+
+
+def test_user_transcript_is_not_assistant_history(client: TestClient) -> None:
+    audio_id = _upload(client, _wav(), "said.wav")
+    first = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={"parts": [{"kind": "audio", "media_id": audio_id}]},
+    )
+    assert first.status_code == 200, first.text
+    transcript = first.json()["parts"][0]["text"]
+    second = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={
+            "conversation_id": first.json()["conversation_id"],
+            "parts": [{"kind": "text", "text": "What did I say?"}],
+        },
+    )
+    assert second.status_code == 200, second.text
+    provider: MockModelProvider = client.app.state.provider
+    history = provider.turns[-1].history
+    assert f"user:{transcript}" in history
+    assert f"assistant:{transcript}" not in history
+
+
+def test_abandoned_retries_do_not_double_send(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "abandon-race.db"
+    url = f"sqlite+pysqlite:///{database.as_posix()}"
+    engine = create_db_engine(url)
+    Base.metadata.create_all(engine)
+    settings = Settings(
+        _env_file=None,
+        environment="test",
+        dev_auth_enabled=True,
+        auth_issuer=ISSUER,
+        auth_audience=AUDIENCE,
+        auth_public_key_pem=PUBLIC_PEM,
+        auth_private_key_pem=PRIVATE_PEM,
+        seed_dev_principals=True,
+        database_url=url,
+        model_provider="mock",
+        log_level="WARNING",
+    )
+    application = create_app(settings=settings, engine=engine)
+    client = TestClient(application)
+    client.__enter__()
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise DomainError("invalid_request", "The context could not be assembled.")
+
+    monkeypatch.setattr(MemoryStore, "assemble", broken)
+    failed = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={
+            "idempotency_key": "abandon-race",
+            "project_key": "lab",
+            "parts": [{"kind": "text", "text": "once"}],
+        },
+    )
+    assert failed.status_code == 400
+    monkeypatch.undo()
+    provider: MockModelProvider = client.app.state.provider
+    started = threading.Event()
+    release = threading.Event()
+    original = provider.respond
+
+    def blocked(turn: ProviderTurn) -> ProviderText:
+        started.set()
+        assert release.wait(timeout=5)
+        return original(turn)
+
+    provider.respond = blocked  # type: ignore[method-assign]
+    outcomes: list[int] = []
+
+    def post() -> None:
+        response = client.post(
+            "/v1/interactions",
+            headers=auth(),
+            json={
+                "idempotency_key": "abandon-race",
+                "project_key": "lab",
+                "parts": [{"kind": "text", "text": "once"}],
+            },
+        )
+        outcomes.append(response.status_code)
+
+    first = threading.Thread(target=post)
+    second = threading.Thread(target=post)
+    first.start()
+    assert started.wait(timeout=5)
+    second.start()
+    second.join(timeout=5)
+    release.set()
+    first.join(timeout=5)
+    provider.respond = original  # type: ignore[method-assign]
+    assert sorted(outcomes) == [200, 409]
+    assert len(provider.turns) == 1
+    client.__exit__(None, None, None)
+    engine.dispose()
 
 
 def _upload(client: TestClient, payload: bytes, name: str) -> str:
