@@ -68,7 +68,12 @@ class MockModelProvider:
     def transcribe(self, audio: bytes, media_type: str, timeout: float) -> str:
         del media_type, timeout
         if self.fail_transcribe:
-            raise ProviderError("timeout", "The mock transcription timed out.")
+            raise ProviderError(
+                "timeout",
+                "The mock transcription timed out.",
+                sent=True,
+                confirmed=False,
+            )
         digest = hashlib.sha256(audio).hexdigest()[:12]
         return f"transcript:{digest}"
 

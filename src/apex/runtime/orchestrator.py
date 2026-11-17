@@ -313,7 +313,11 @@ class Orchestrator:
             self.ctx.session.commit()
             return
         assembled = self.memory.assemble_for_task(task)
-        intent = self.intent_engine.interpret(task.request_text, memory=assembled)
+        intent = self.intent_engine.interpret(
+            task.request_text,
+            memory=assembled,
+            principal_id=task.principal_id,
+        )
         summary, ignored = self.coordinator.advise(
             task.request_text,
             set(intent.required_capabilities),

@@ -83,6 +83,7 @@ class ConnectionView(BaseModel):
     expires_at: datetime | None
     last_health_at: datetime | None
     revoked_at: datetime | None
+    device_id: str | None = None
 
 
 class OperationView(BaseModel):

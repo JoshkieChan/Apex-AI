@@ -91,6 +91,7 @@ class McpRegistrationService:
         transport: str = "inprocess",
         endpoint: str | None = None,
         credential_ref: str | None = None,
+        connection_key: str | None = None,
     ) -> McpServerRecord:
         if server_key == "fixture":
             if transport != "inprocess" or endpoint or credential_ref:
@@ -112,18 +113,33 @@ class McpRegistrationService:
             )
             if credential_ref:
                 validate_secret_reference(credential_ref)
-        existing = self._session.scalar(
-            select(McpServerRecord).where(
-                McpServerRecord.server_key.in_((server_key, f"{owner_id}:{server_key}")),
-                McpServerRecord.owner_principal_id == owner_id,
+        if connection_key:
+            bound = f"{owner_id}-{connection_key}"
+            owned_bound = self._session.scalar(
+                select(McpServerRecord).where(
+                    McpServerRecord.server_key == bound,
+                    McpServerRecord.owner_principal_id == owner_id,
+                )
             )
-        )
-        if existing is not None:
-            return existing
-        taken = self._session.scalar(
-            select(McpServerRecord).where(McpServerRecord.server_key == server_key)
-        )
-        stored_key = server_key if taken is None else f"{owner_id}:{server_key}"
+            if owned_bound is not None:
+                return owned_bound
+            taken = self._session.scalar(
+                select(McpServerRecord).where(McpServerRecord.server_key == server_key)
+            )
+            stored_key = server_key if taken is None else bound
+        else:
+            existing = self._session.scalar(
+                select(McpServerRecord).where(
+                    McpServerRecord.server_key.in_((server_key, f"{owner_id}:{server_key}")),
+                    McpServerRecord.owner_principal_id == owner_id,
+                )
+            )
+            if existing is not None:
+                return existing
+            taken = self._session.scalar(
+                select(McpServerRecord).where(McpServerRecord.server_key == server_key)
+            )
+            stored_key = server_key if taken is None else f"{owner_id}:{server_key}"
         record = McpServerRecord(
             id=new_id(),
             server_key=stored_key,
@@ -353,6 +369,7 @@ class McpRegistrationService:
                 if server.transport == "inprocess" and tool.tool_name == "records_update"
                 else "none"
             ),
+            owner_principal_id=server.owner_principal_id,
         )
         self._registry.replace(spec)
 
@@ -396,7 +413,6 @@ def _adapter(
         from apex.connectors.gates import enforce
         from apex.connectors.project import execution_project
 
-        _refresh_gate_from_database(settings, server_id)
         enforce(server_id, permission_key, execution_project(payload), datetime.now(UTC))
         arguments = {str(key): value for key, value in payload.items()}
         if transport == "inprocess":
@@ -421,38 +437,3 @@ def _adapter(
         )
 
     return run
-
-
-def _refresh_gate_from_database(settings: Settings | None, server_id: str) -> None:
-    """Replace a process-local ceiling with the committed connection row when one exists."""
-    if settings is None or not settings.database_url:
-        return
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from apex.persistence.models import Connection
-    from apex.persistence.session import create_db_engine, create_session_factory
-
-    engine = create_db_engine(settings.database_url)
-    try:
-        factory = create_session_factory(engine)
-        with factory() as session:
-            connection = session.scalar(
-                select(Connection).where(Connection.mcp_server_id == server_id)
-            )
-            if connection is None:
-                return
-            from apex.connectors.gates import ConnectionGate, set_gate
-
-            set_gate(
-                server_id,
-                ConnectionGate(
-                    state=connection.state,
-                    scopes=frozenset(connection.scopes or []),
-                    project_key=connection.project_key,
-                    expires_at=connection.expires_at,
-                ),
-            )
-    except SQLAlchemyError:
-        return
-    finally:
-        engine.dispose()
