@@ -54,6 +54,14 @@ def post_json(
     """POST JSON and return a decoded object. Response bodies are not included in errors."""
     try:
         response = client.post(url, headers=headers, json=body, timeout=timeout)
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+        code = "timeout" if isinstance(exc, httpx.TimeoutException) else "unavailable"
+        raise ProviderError(
+            code,
+            "The model provider was not reached.",
+            sent=False,
+            confirmed=False,
+        ) from exc
     except httpx.TimeoutException as exc:
         raise ProviderError(
             "timeout", "The model provider timed out.", sent=True, confirmed=False
@@ -88,7 +96,17 @@ def parse_json_object(text: str) -> dict[str, Any]:
     try:
         value = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ProviderError("invalid_output", "The model output was not valid JSON.") from exc
+        raise ProviderError(
+            "invalid_output",
+            "The model output was not valid JSON.",
+            sent=True,
+            confirmed=True,
+        ) from exc
     if not isinstance(value, dict):
-        raise ProviderError("invalid_output", "The model output was not a JSON object.")
+        raise ProviderError(
+            "invalid_output",
+            "The model output was not a JSON object.",
+            sent=True,
+            confirmed=True,
+        )
     return value

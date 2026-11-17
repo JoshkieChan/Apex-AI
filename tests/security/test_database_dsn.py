@@ -45,6 +45,28 @@ def test_host_wins_over_an_environment_url(monkeypatch: pytest.MonkeyPatch) -> N
     assert unquote(parts.password) == "a@b"
 
 
+def test_explicit_url_matching_the_environment_is_not_replaced(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    chosen = "sqlite+pysqlite:///explicit.db"
+    monkeypatch.setenv("APEX_DATABASE_URL", chosen)
+    monkeypatch.setenv("APEX_POSTGRES_HOST", "postgres")
+    monkeypatch.setenv("APEX_POSTGRES_PASSWORD", "a@b")
+    settings = Settings(_env_file=None, database_url=chosen)
+    assert settings.database_url == chosen
+
+
+def test_explicit_url_does_not_require_discrete_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("APEX_POSTGRES_HOST", "postgres")
+    monkeypatch.delenv("APEX_POSTGRES_PASSWORD", raising=False)
+    monkeypatch.delenv("APEX_DATABASE_URL", raising=False)
+    chosen = "sqlite+pysqlite:///:memory:"
+    settings = Settings(_env_file=None, database_url=chosen)
+    assert settings.database_url == chosen
+
+
 def test_explicit_database_url_is_not_replaced(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APEX_DATABASE_URL", raising=False)
     monkeypatch.setenv("APEX_POSTGRES_HOST", "postgres")

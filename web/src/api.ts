@@ -5,6 +5,7 @@ export type InputPart =
 
 export interface InteractionRequest {
   conversationId?: string;
+  idempotencyKey?: string;
   outputAudio?: boolean;
   parts: InputPart[];
 }
@@ -39,7 +40,18 @@ export function interactionBody(request: InteractionRequest): Record<string, unk
   if (request.conversationId) {
     body.conversation_id = request.conversationId;
   }
+  if (request.idempotencyKey) {
+    body.idempotency_key = request.idempotencyKey;
+  }
   return body;
+}
+
+export function claimSubmit(inflight: { current: boolean }): boolean {
+  if (inflight.current) {
+    return false;
+  }
+  inflight.current = true;
+  return true;
 }
 
 export function responseText(response: InteractionResponse): {

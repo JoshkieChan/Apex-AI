@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import {
+  claimSubmit,
   interactionBody,
   keepConversation,
   readError,
@@ -35,6 +36,7 @@ export function App() {
   const chunks = useRef<Blob[]>([]);
   const spokenUrl = useRef("");
   const previewUrls = useRef<string[]>([]);
+  const sending = useRef(false);
 
   function saveToken(value: string) {
     setToken(value);
@@ -129,6 +131,9 @@ export function App() {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (!claimSubmit(sending)) {
+      return;
+    }
     setBusy(true);
     setError("");
     setAudioUrl("");
@@ -155,6 +160,7 @@ export function App() {
         body: JSON.stringify(
           interactionBody({
             conversationId: conversationId || undefined,
+            idempotencyKey: crypto.randomUUID(),
             parts,
             outputAudio: wantAudio,
           }),
@@ -186,6 +192,7 @@ export function App() {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "The request failed.");
     } finally {
+      sending.current = false;
       setBusy(false);
     }
   }

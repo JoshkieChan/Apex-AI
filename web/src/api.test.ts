@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { interactionBody, keepConversation, responseText, turnsFromConversation } from "./api";
+import {
+  claimSubmit,
+  interactionBody,
+  keepConversation,
+  responseText,
+  turnsFromConversation,
+} from "./api";
 
 describe("interaction request", () => {
   it("maps text, images, and audio without a principal", () => {
@@ -23,6 +29,20 @@ describe("interaction request", () => {
       ],
     });
     expect(body).not.toHaveProperty("principal_id");
+    expect(body).not.toHaveProperty("idempotency_key");
+  });
+
+  it("sends one idempotency key and ignores a second submit", () => {
+    const body = interactionBody({
+      idempotencyKey: "turn-1",
+      parts: [{ kind: "text", text: "hello" }],
+    });
+    expect(body.idempotency_key).toBe("turn-1");
+    const inflight = { current: false };
+    expect(claimSubmit(inflight)).toBe(true);
+    expect(claimSubmit(inflight)).toBe(false);
+    inflight.current = false;
+    expect(claimSubmit(inflight)).toBe(true);
   });
 
   it("keeps the transcript distinct from the answer", () => {

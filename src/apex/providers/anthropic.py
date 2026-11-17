@@ -184,7 +184,12 @@ def _split_messages(request: ModelRequest) -> tuple[str, list[dict[str, str]]]:
 def _extract_text_json(payload: dict[str, Any]) -> dict[str, Any]:
     blocks = payload.get("content")
     if not isinstance(blocks, list):
-        raise ProviderError("invalid_output", "The model provider returned no content.")
+        raise ProviderError(
+            "invalid_output",
+            "The model provider returned no content.",
+            sent=True,
+            confirmed=True,
+        )
     texts: list[str] = []
     for block in blocks:
         if not isinstance(block, dict) or block.get("type") != "text":
@@ -193,14 +198,24 @@ def _extract_text_json(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(text, str):
             texts.append(text)
     if not texts:
-        raise ProviderError("invalid_output", "The model provider returned no text content.")
+        raise ProviderError(
+            "invalid_output",
+            "The model provider returned no text content.",
+            sent=True,
+            confirmed=True,
+        )
     return parse_json_object("".join(texts))
 
 
 def _plain_text(payload: dict[str, Any]) -> str:
     blocks = payload.get("content")
     if not isinstance(blocks, list):
-        raise ProviderError("invalid_output", "The model provider returned no content.")
+        raise ProviderError(
+            "invalid_output",
+            "The model provider returned no content.",
+            sent=True,
+            confirmed=True,
+        )
     texts = [
         block["text"]
         for block in blocks
@@ -209,10 +224,20 @@ def _plain_text(payload: dict[str, Any]) -> str:
         and isinstance(block.get("text"), str)
     ]
     if not texts:
-        raise ProviderError("invalid_output", "The model provider returned no text content.")
+        raise ProviderError(
+            "invalid_output",
+            "The model provider returned no text content.",
+            sent=True,
+            confirmed=True,
+        )
     text = "".join(texts)
     if len(text) > 16_000:
-        raise ProviderError("invalid_output", "The model provider returned an unbounded response.")
+        raise ProviderError(
+            "invalid_output",
+            "The model provider returned an unbounded response.",
+            sent=True,
+            confirmed=True,
+        )
     return text
 
 

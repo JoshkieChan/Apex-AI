@@ -572,6 +572,39 @@ def test_pre_dispatch_failure_keeps_media_for_the_same_key(
     assert retried.status_code == 200, retried.text
 
 
+def test_unsent_provider_failure_keeps_media_for_the_same_key(client: TestClient) -> None:
+    image_id = _upload(client, _png(1, 1), "unsent.png")
+    provider: MockModelProvider = client.app.state.provider
+    provider.fail = True
+    failed = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={
+            "idempotency_key": "unsent-media",
+            "project_key": "lab",
+            "parts": [
+                {"kind": "text", "text": "describe"},
+                {"kind": "image", "media_id": image_id},
+            ],
+        },
+    )
+    assert failed.status_code == 502, failed.text
+    provider.fail = False
+    retried = client.post(
+        "/v1/interactions",
+        headers=auth(),
+        json={
+            "idempotency_key": "unsent-media",
+            "project_key": "lab",
+            "parts": [
+                {"kind": "text", "text": "describe"},
+                {"kind": "image", "media_id": image_id},
+            ],
+        },
+    )
+    assert retried.status_code == 200, retried.text
+
+
 def test_user_transcript_is_not_assistant_history(client: TestClient) -> None:
     audio_id = _upload(client, _wav(), "said.wav")
     first = client.post(
