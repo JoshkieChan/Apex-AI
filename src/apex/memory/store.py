@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, or_, select, union, update
 from sqlalchemy.orm import Session
 
 from apex.clock import Clock, ensure_aware
@@ -31,6 +31,7 @@ from apex.persistence.models import (
     ContextRecord,
     Delegation,
     Execution,
+    Goal,
     MemoryEvent,
     MemoryPurge,
     MemoryRecord,
@@ -46,58 +47,72 @@ from apex.runtime_ids import new_id
 
 _CANDIDATE_LIMIT = 200
 _REDACTED = "[redacted]"
+_TERMINAL_TASKS = ("completed", "failed", "cancelled")
+_TERMINAL_GOALS = ("completed", "partial", "failed", "cancelled")
+
+
+def _normalize_with_map(text: str) -> tuple[str, list[tuple[int, int]]]:
+    """Casefold and collapse whitespace, remembering each original source span.
+
+    One source character can expand to several normalized characters. A run of
+    whitespace becomes one space whose span covers the whole run.
+    """
+    stream: list[tuple[str, int, int]] = []
+    for index, char in enumerate(text):
+        for piece in char.casefold():
+            stream.append((piece, index, index + 1))
+    normalized: list[str] = []
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    while cursor < len(stream):
+        character, start, _end = stream[cursor]
+        if character.isspace():
+            end = cursor
+            while end < len(stream) and stream[end][0].isspace():
+                end += 1
+            normalized.append(" ")
+            spans.append((stream[cursor][1], stream[end - 1][2]))
+            cursor = end
+            continue
+        normalized.append(character)
+        spans.append((start, stream[cursor][2]))
+        cursor += 1
+    return "".join(normalized), spans
 
 
 def _redact_text(haystack: str, secret: str) -> tuple[str, bool]:
     """Redact a case- and whitespace-insensitive copy of a long secret.
 
-    Short secrets are left untouched. This does not match paraphrases, hashes,
-    or other encodings.
+    The length threshold applies to the normalized secret. The replacement uses
+    the original source span, including characters that casefold to more than
+    one character. Short secrets, hashes, suffixes, and paraphrases stay.
     """
     needle = " ".join(secret.casefold().split())
     if len(needle) < 12 or not haystack:
         return haystack, False
+    normalized, spans = _normalize_with_map(haystack)
     pieces: list[str] = []
     cursor = 0
-    index = 0
+    search = 0
     changed = False
-    while index < len(haystack):
-        if haystack[index].isspace():
-            index += 1
+    while search <= len(normalized) - len(needle):
+        found = normalized.find(needle, search)
+        if found < 0:
+            break
+        start = spans[found][0]
+        end = spans[found + len(needle) - 1][1]
+        if start < cursor:
+            search = found + 1
             continue
-        end = _normalized_match(haystack, index, needle)
-        if end is None:
-            index += 1
-            continue
-        pieces.append(haystack[cursor:index])
+        pieces.append(haystack[cursor:start])
         pieces.append(_REDACTED)
         cursor = end
-        index = end
+        search = found + len(needle)
         changed = True
     if not changed:
         return haystack, False
     pieces.append(haystack[cursor:])
     return "".join(pieces), True
-
-
-def _normalized_match(haystack: str, start: int, needle: str) -> int | None:
-    needle_index = 0
-    index = start
-    while needle_index < len(needle) and index < len(haystack):
-        if needle[needle_index] == " ":
-            if not haystack[index].isspace():
-                return None
-            while index < len(haystack) and haystack[index].isspace():
-                index += 1
-            needle_index += 1
-            continue
-        if haystack[index].isspace() or haystack[index].casefold() != needle[needle_index]:
-            return None
-        index += 1
-        needle_index += 1
-    if needle_index == len(needle):
-        return index
-    return None
 
 
 def _redact_value(value: Any, secret: str) -> tuple[Any, bool]:
@@ -374,17 +389,28 @@ class MemoryStore:
         return len(rows)
 
     def expire_operational_proposals(self, now: datetime | None = None) -> int:
-        """Delete old untrusted context proposals. Trusted audit rows stay."""
+        """Delete old untrusted proposals that are not tied to unresolved work.
+
+        A proposal whose scope id is an unresolved task, an unresolved goal, or
+        the task of an unresolved goal stays. Orphaned proposals and proposals
+        for terminal work can expire. Trusted rows are not proposals.
+        """
         days = self._settings.operational_retention_days
         if days <= 0:
             return 0
         moment = self._clock.now() if now is None else now
         cutoff = moment - timedelta(days=days)
+        unresolved = union(
+            select(Task.id.label("scope_id")).where(Task.status.notin_(_TERMINAL_TASKS)),
+            select(Goal.id.label("scope_id")).where(Goal.status.notin_(_TERMINAL_GOALS)),
+            select(Goal.task_id.label("scope_id")).where(Goal.status.notin_(_TERMINAL_GOALS)),
+        ).subquery()
         rows = list(
             self._session.scalars(
                 select(ContextRecord).where(
                     ContextRecord.trust == "proposal",
                     ContextRecord.created_at <= cutoff,
+                    ContextRecord.scope_id.not_in(select(unresolved.c.scope_id)),
                 )
             )
         )
@@ -394,7 +420,7 @@ class MemoryStore:
 
     def _redact_context(self, content: str) -> None:
         """Remove deleted memory text from task context rows. The row itself stays."""
-        if len(content) < 12:
+        if len(" ".join(content.casefold().split())) < 12:
             return
         rows = list(self._session.scalars(select(ContextRecord)))
         for row in rows:

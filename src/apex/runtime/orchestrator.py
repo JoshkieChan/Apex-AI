@@ -29,7 +29,11 @@ from apex.contracts.schemas import (
     VerificationStatus,
 )
 from apex.errors import AdvanceYield, DomainError
-from apex.execution.engine import ExecutionEngine
+from apex.execution.engine import (
+    ExecutionEngine,
+    latest_execution_for_step,
+    unresolved_external_outcome,
+)
 from apex.intent.engine import IntentEngine
 from apex.logging_config import get_logger
 from apex.memory.service import MemoryService
@@ -553,15 +557,24 @@ class Orchestrator:
                 capability_id=step.capability_id,
                 principal_id=task.principal_id,
             ):
-                execution = self.specialist.perform(
-                    task_id=task.id,
-                    principal_id=task.principal_id,
-                    step=step,
-                    approval=approval,
-                    prior_outputs=outputs,
-                    operation_hash=step.operation_hash,
-                    delegation_id=task.delegation_id,
-                )
+                try:
+                    execution = self.specialist.perform(
+                        task_id=task.id,
+                        principal_id=task.principal_id,
+                        step=step,
+                        approval=approval,
+                        prior_outputs=outputs,
+                        operation_hash=step.operation_hash,
+                        delegation_id=task.delegation_id,
+                    )
+                except DomainError as exc:
+                    persisted = latest_execution_for_step(self.ctx.session, step.id)
+                    if unresolved_external_outcome(persisted):
+                        raise DomainError(
+                            "outcome_uncertain",
+                            "The external outcome could not be confirmed.",
+                        ) from exc
+                    raise
             if execution.status == ExecutionStatus.uncertain.value:
                 raise DomainError(
                     "outcome_uncertain",

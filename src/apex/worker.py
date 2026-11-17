@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import threading
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -29,6 +32,22 @@ from apex.worker_status import WorkerStatus, start_health_server
 logger = get_logger("worker")
 
 
+@dataclass(frozen=True)
+class RecoveryReport:
+    """One recovery pass. A claim is not a confirmed success."""
+
+    tasks_handled: int = 0
+    tasks_succeeded: int = 0
+    tasks_failed: int = 0
+    tasks_uncertain: int = 0
+    tasks_deferred: int = 0
+    goals_claimed: int = 0
+    goals_succeeded: int = 0
+    goals_failed: int = 0
+    goals_uncertain: int = 0
+    goals_deferred: int = 0
+
+
 def recover_available(
     *,
     factory: sessionmaker[Session],
@@ -36,10 +55,10 @@ def recover_available(
     registry: CapabilityRegistry,
     provider: ModelProvider | None,
     clock: Clock,
-) -> int:
+) -> RecoveryReport:
     """Resume expired task leases, decided approvals, and recoverable goals."""
     try:
-        handled = _recover_tasks(
+        tasks = _recover_tasks(
             factory=factory,
             settings=settings,
             registry=registry,
@@ -48,15 +67,25 @@ def recover_available(
         )
     except SQLAlchemyError:
         logger.exception("task recovery failed")
-        return 0
+        raise
     try:
-        handled += _recover_goals(
-            factory=factory, settings=settings, registry=registry, clock=clock
-        )
+        goals = _recover_goals(factory=factory, settings=settings, registry=registry, clock=clock)
         _purge_memory(factory=factory, settings=settings, clock=clock)
     except SQLAlchemyError:
         logger.exception("goal recovery failed")
-    return handled
+        raise
+    return RecoveryReport(
+        tasks_handled=tasks.tasks_handled,
+        tasks_succeeded=tasks.tasks_succeeded,
+        tasks_failed=tasks.tasks_failed,
+        tasks_uncertain=tasks.tasks_uncertain,
+        tasks_deferred=tasks.tasks_deferred,
+        goals_claimed=goals.goals_claimed,
+        goals_succeeded=goals.goals_succeeded,
+        goals_failed=goals.goals_failed,
+        goals_uncertain=goals.goals_uncertain,
+        goals_deferred=goals.goals_deferred,
+    )
 
 
 def _recover_tasks(
@@ -66,34 +95,56 @@ def _recover_tasks(
     registry: CapabilityRegistry,
     provider: ModelProvider | None,
     clock: Clock,
-) -> int:
+) -> RecoveryReport:
     with factory() as session:
         expired = recoverable_task_ids(session, clock.now())
         ready = ready_after_approval_ids(session)
     expired_ids = set(expired)
     task_ids = list(dict.fromkeys([*expired, *ready]))
-    handled = 0
+    handled = succeeded = failed = uncertain = deferred = 0
     for task_id in task_ids:
         with factory() as session:
-            orchestrator = build_orchestrator(
-                session=session,
-                settings=settings,
-                registry=registry,
-                provider=provider,
-                clock=clock,
-            )
-            task = get_task(session, task_id)
-            if task is None:
+            try:
+                orchestrator = build_orchestrator(
+                    session=session,
+                    settings=settings,
+                    registry=registry,
+                    provider=provider,
+                    clock=clock,
+                )
+                task = get_task(session, task_id)
+                if task is None:
+                    continue
+                if task_id in expired_ids and task.attempt_count >= settings.max_task_attempts:
+                    orchestrator.fail_exhausted(task_id)
+                else:
+                    if task_id in expired_ids:
+                        task.attempt_count += 1
+                        session.commit()
+                    orchestrator.advance(task_id)
+                outcome = _task_outcome(session, task_id)
+            except Exception:  # noqa: BLE001
+                session.rollback()
+                logger.exception("task recovery failed for %s", task_id)
+                handled += 1
+                failed += 1
                 continue
-            if task_id in expired_ids and task.attempt_count >= settings.max_task_attempts:
-                orchestrator.fail_exhausted(task_id)
-            else:
-                if task_id in expired_ids:
-                    task.attempt_count += 1
-                    session.commit()
-                orchestrator.advance(task_id)
             handled += 1
-    return handled
+            if outcome == "succeeded":
+                succeeded += 1
+            elif outcome == "failed":
+                failed += 1
+            elif outcome == "uncertain":
+                uncertain += 1
+            else:
+                deferred += 1
+    return RecoveryReport(
+        tasks_handled=handled,
+        tasks_succeeded=succeeded,
+        tasks_failed=failed,
+        tasks_uncertain=uncertain,
+        tasks_deferred=deferred,
+    )
 
 
 def _recover_goals(
@@ -102,7 +153,7 @@ def _recover_goals(
     settings: Settings,
     registry: CapabilityRegistry,
     clock: Clock,
-) -> int:
+) -> RecoveryReport:
     with factory() as session:
         exhausted = exhaust_goal_ids(session, clock.now(), settings.max_goal_recoveries)
     for goal_id in exhausted:
@@ -111,17 +162,49 @@ def _recover_goals(
             session.commit()
     with factory() as session:
         goal_ids = recoverable_goal_ids(session, clock.now(), settings.max_goals_per_recovery)
-    handled = 0
+    claimed = succeeded = failed = uncertain = deferred = 0
     for goal_id in goal_ids:
         with factory() as session:
+            service = CoordinationService(session, settings, registry, clock)
             try:
-                if CoordinationService(session, settings, registry, clock).recover(goal_id):
-                    handled += 1
+                result = service.recover(goal_id)
                 session.commit()
             except Exception:  # noqa: BLE001
                 session.rollback()
                 logger.exception("goal recovery failed for %s", goal_id)
-    return handled
+                if service.last_claim_acquired:
+                    claimed += 1
+                failed += 1
+                continue
+            if not result.claimed:
+                continue
+            claimed += 1
+            if result.outcome == "succeeded":
+                succeeded += 1
+            elif result.outcome == "failed":
+                failed += 1
+            elif result.outcome == "uncertain":
+                uncertain += 1
+            elif result.outcome == "deferred":
+                deferred += 1
+    return RecoveryReport(
+        goals_claimed=claimed,
+        goals_succeeded=succeeded,
+        goals_failed=failed,
+        goals_uncertain=uncertain,
+        goals_deferred=deferred,
+    )
+
+
+def _task_outcome(session: Session, task_id: str) -> str:
+    task = get_task(session, task_id)
+    if task is None or task.status == "failed":
+        return "failed"
+    if task.status == "completed":
+        return "succeeded"
+    if task.status == "uncertain":
+        return "uncertain"
+    return "deferred"
 
 
 def _purge_memory(
@@ -159,10 +242,12 @@ def serve(
     *,
     clock: Clock | None = None,
     status_out: list[WorkerStatus] | None = None,
+    poll_once: Callable[[], RecoveryReport] | None = None,
 ) -> None:
-    """Poll until asked to stop. The current pass finishes, then the process exits."""
+    """Poll until asked to stop. Shutdown waits only until the configured deadline."""
     used = clock or SystemClock()
-    status = WorkerStatus(settings.instance_id)
+    freshness = max(settings.worker_interval_seconds * 3, 1.0)
+    status = WorkerStatus(settings.instance_id, freshness_seconds=freshness)
     if status_out is not None:
         status_out.append(status)
     server, bound = start_health_server(settings.worker_health_port, status)
@@ -179,39 +264,95 @@ def serve(
     factory = create_session_factory(engine)
     registry = build_default_registry()
     provider = build_provider(settings)
+
+    def _once() -> None:
+        if poll_once is not None:
+            report = poll_once()
+            status.mark_operational(
+                when=used.now(),
+                eligible=0,
+                goals_claimed=report.goals_claimed,
+                goals_succeeded=report.goals_succeeded,
+                goals_failed=report.goals_failed,
+                goals_uncertain=report.goals_uncertain,
+                goals_deferred=report.goals_deferred,
+                tasks_handled=report.tasks_handled,
+                tasks_succeeded=report.tasks_succeeded,
+                tasks_failed=report.tasks_failed,
+                tasks_uncertain=report.tasks_uncertain,
+            )
+            return
+        if not probe_database(factory):
+            status.mark_degraded(when=used.now())
+            logger.info(
+                "worker poll instance=%s phase=degraded eligible=0 claimed=0",
+                settings.instance_id,
+            )
+            return
+        try:
+            report = recover_available(
+                factory=factory,
+                settings=settings,
+                registry=registry,
+                provider=provider,
+                clock=used,
+            )
+            eligible = eligible_goal_count(factory, used, settings.max_goals_per_recovery)
+        except SQLAlchemyError:
+            logger.exception("worker database unavailable")
+            status.mark_degraded(when=used.now())
+            return
+        status.mark_operational(
+            when=used.now(),
+            eligible=eligible,
+            tasks_handled=report.tasks_handled,
+            tasks_succeeded=report.tasks_succeeded,
+            tasks_failed=report.tasks_failed,
+            tasks_uncertain=report.tasks_uncertain,
+            goals_claimed=report.goals_claimed,
+            goals_succeeded=report.goals_succeeded,
+            goals_failed=report.goals_failed,
+            goals_uncertain=report.goals_uncertain,
+            goals_deferred=report.goals_deferred,
+        )
+        snap = status.snapshot()
+        logger.info(
+            "worker poll instance=%s phase=%s eligible=%s claimed_goals=%s "
+            "tasks_handled=%s successes=%s failures=%s uncertain=%s deferred=%s",
+            settings.instance_id,
+            snap["status"],
+            snap["eligible_goals"],
+            snap["claimed_goals"],
+            snap["tasks_handled"],
+            snap["recovery_successes"],
+            snap["recovery_failures"],
+            snap["goals_uncertain"],
+            snap["goals_deferred"],
+        )
+
     try:
         while not stop.is_set():
-            if probe_database(factory):
+            finished = threading.Event()
+
+            def _run(gate: threading.Event = finished) -> None:
                 try:
-                    claimed = recover_available(
-                        factory=factory,
-                        settings=settings,
-                        registry=registry,
-                        provider=provider,
-                        clock=used,
-                    )
-                    eligible = eligible_goal_count(factory, used, settings.max_goals_per_recovery)
-                except SQLAlchemyError:
-                    logger.exception("worker database unavailable")
-                    status.mark_degraded(when=used.now())
-                else:
-                    status.mark_operational(when=used.now(), eligible=eligible, claimed=claimed)
-                    snap = status.snapshot()
+                    _once()
+                finally:
+                    gate.set()
+
+            threading.Thread(target=_run, name="apex-worker-poll", daemon=True).start()
+            while not finished.wait(0.05):
+                if stop.is_set():
+                    break
+            if stop.is_set():
+                status.mark_shutting_down()
+                if not finished.wait(settings.worker_shutdown_seconds):
                     logger.info(
-                        "worker poll instance=%s phase=operational eligible=%s claimed=%s "
-                        "successes=%s failures=%s",
+                        "worker shutdown deadline exceeded instance=%s grace=%s",
                         settings.instance_id,
-                        snap["eligible_goals"],
-                        snap["claimed_goals"],
-                        snap["recovery_successes"],
-                        snap["recovery_failures"],
+                        settings.worker_shutdown_seconds,
                     )
-            else:
-                status.mark_degraded(when=used.now())
-                logger.info(
-                    "worker poll instance=%s phase=degraded eligible=0 claimed=0",
-                    settings.instance_id,
-                )
+                break
             if stop.wait(settings.worker_interval_seconds):
                 break
     finally:
@@ -222,7 +363,7 @@ def serve(
         server.server_close()
 
 
-def recover_once() -> int:
+def recover_once() -> RecoveryReport:
     """Recover tasks using process settings. Intended for one-shot invocation."""
     settings = load_settings()
     assert_runtime_is_allowed(settings)
@@ -249,8 +390,14 @@ def main() -> None:
     assert_runtime_is_allowed(settings)
     configure_logging(settings)
     if args.once:
-        count = recover_once()
-        logger.info("recovery pass resumed %s task(s)", count)
+        report = recover_once()
+        logger.info(
+            "recovery pass tasks=%s goals=%s successes=%s failures=%s",
+            report.tasks_handled,
+            report.goals_claimed,
+            report.tasks_succeeded + report.goals_succeeded,
+            report.tasks_failed + report.goals_failed,
+        )
         return
     stop = threading.Event()
 
@@ -261,6 +408,10 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     serve(settings, stop)
+    # serve() returns when the shutdown wait ends. A blocked adapter thread is
+    # not cancelled by ThreadPoolExecutor; ending the process is the deadline.
+    # Docker's stop grace period is the SIGKILL backstop if this does not run.
+    os._exit(0)
 
 
 if __name__ == "__main__":

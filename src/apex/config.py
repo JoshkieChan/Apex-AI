@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import os
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from apex.persistence.dsn import assemble_database_url
+
+_explicit_database_url: ContextVar[bool] = ContextVar("apex_explicit_database_url", default=False)
 
 
 class Settings(BaseSettings):
@@ -23,8 +29,52 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
+    def __init__(self, **values: Any) -> None:
+        token = _explicit_database_url.set("database_url" in values)
+        try:
+            super().__init__(**values)
+        finally:
+            _explicit_database_url.reset(token)
+
     environment: Literal["development", "test", "production"] = "development"
     database_url: str = "sqlite+pysqlite:///:memory:"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _use_discrete_database_settings(cls, data: Any) -> Any:
+        """Prefer host and password parts over a hand-built URL.
+
+        An explicit database_url argument still wins, so tests can point at a
+        disposable database. The password is encoded inside the URL and is not
+        stored on another field.
+        """
+        if not isinstance(data, dict) or data.get("database_url"):
+            return data
+        assembled = assemble_database_url()
+        if assembled is None:
+            return data
+        copied = dict(data)
+        copied["database_url"] = assembled
+        return copied
+
+    @model_validator(mode="after")
+    def _host_wins_over_environment_url(self) -> Settings:
+        """Use the encoded host URL when the process did not pass one.
+
+        A database_url argument wins even when it equals ``APEX_DATABASE_URL``.
+        Incomplete host settings are not read in that case, so they cannot
+        reject an explicit URL. Alembic uses the same host precedence.
+        """
+        if _explicit_database_url.get():
+            return self
+        env_url = os.environ.get("APEX_DATABASE_URL")
+        if not env_url or self.database_url != env_url:
+            return self
+        assembled = assemble_database_url()
+        if assembled is not None:
+            self.database_url = assembled
+        return self
+
     dev_auth_enabled: bool = False
     seed_dev_principals: bool = False
     log_level: str = "INFO"

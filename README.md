@@ -70,13 +70,14 @@ uv run apex-worker --once
 
 ## Supported deployment
 
-`infrastructure/docker/compose.deploy.yml` is the supported stack. It starts PostgreSQL, applies migrations once, then starts the API and a continuous `apex-worker`. The worker is not part of the API process. Eligible `planned` and `running` goals resume without `POST /v1/goals/{id}/run`.
+`infrastructure/docker/compose.deploy.yml` is the local production-mode scaffold. It starts PostgreSQL, applies migrations once, then starts the API and one continuous `apex-worker`. Set `APEX_POSTGRES_PASSWORD` first. Compose has no default password. The API is published on `127.0.0.1:8000` only. PostgreSQL and worker health are not published on the host. This file is not an internet deployment. Eligible `planned` and `running` goals resume without `POST /v1/goals/{id}/run`. Horizontal scaling is unsupported.
 
 ```bash
+# Set APEX_POSTGRES_PASSWORD in the environment. Do not commit it.
 docker compose -f infrastructure/docker/compose.deploy.yml up -d --build
 ```
 
-That project uses host port 5433 and the volume `apex_deploy_pg_data`. It does not attach the development volume. The image process runs as `nobody`, with development authentication off. `GET /health` can be 200 while `GET /ready` is 503 until the issuer, audience, and public key are configured. Worker health is `http://127.0.0.1:8001/health` and is 200 only after a database poll succeeds. See `docs/architecture/deployment.md`.
+That project uses the volume `apex_deploy_pg_data` and does not publish PostgreSQL. It does not attach the development volume. The image process runs as `nobody`, with development authentication off. `GET /health` can be 200 while `GET /ready` is 503 until the issuer, audience, and public key are configured. Worker health is inside the container on port 8001 and is 200 only after a fresh database poll. See `docs/architecture/deployment.md`.
 
 ## Tests and checks
 
