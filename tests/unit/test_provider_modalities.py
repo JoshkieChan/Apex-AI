@@ -84,3 +84,38 @@ def test_anthropic_does_not_silently_gain_audio() -> None:
     with pytest.raises(ProviderError) as blocked:
         adapter.transcribe(b"audio", "audio/wav", 1)
     assert blocked.value.code == "unsupported"
+
+
+def test_anthropic_invalid_text_is_a_confirmed_response() -> None:
+    adapter = AnthropicAdapter(
+        api_key="test-key",
+        model="claude-test",
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(200, json={"content": []})
+            )
+        ),
+    )
+    with pytest.raises(ProviderError) as caught:
+        adapter.respond(ProviderTurn(policy="policy", history=(), parts=(), timeout_seconds=1))
+    assert caught.value.sent is True
+    assert caught.value.confirmed is True
+
+
+def test_connect_timeout_is_not_sent() -> None:
+    from apex.providers.http import post_json
+
+    def raise_connect(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("name lookup failed")
+
+    client = httpx.Client(transport=httpx.MockTransport(raise_connect))
+    with pytest.raises(ProviderError) as caught:
+        post_json(
+            client,
+            "https://example.test/v1",
+            headers={},
+            body={},
+            timeout=1,
+        )
+    assert caught.value.sent is False
+    assert caught.value.confirmed is False

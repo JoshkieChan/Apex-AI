@@ -137,10 +137,12 @@ class InteractionService:
             inputs = self._load_inputs(actor, body, now)
             view, generated = self._complete(actor, body, conversation, row, inputs, caps, now)
         except ProviderError as exc:
-            self._release_inputs(inputs, body, conversation, now, unlink)
+            if exc.sent:
+                self._release_inputs(inputs, body, conversation, now, unlink)
             self._provider_exit(row, exc)
             self._session.commit()
-            self._unlink(unlink)
+            if exc.sent:
+                self._unlink(unlink)
             _log(row, body, "failed", _media_bytes(inputs))
             if exc.sent and not exc.confirmed:
                 raise DomainError(
